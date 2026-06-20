@@ -7,6 +7,8 @@
 
 pub const version = "0.1.0";
 
+pub const policy = @import("policy.zig");
+
 const provider = @import("provider.zig");
 pub const assertActive = provider.assertActive;
 pub const ensureFips = provider.ensureFips;

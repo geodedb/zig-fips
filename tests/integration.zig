@@ -3,30 +3,14 @@
 
 //! Integration tests for fips.
 //!
-//! These tests run via `zig build test-integration` and exercise the
-//! library through its public module surface (the same way a downstream
-//! consumer would import it). Use this file for cross-module behaviour,
-//! end-to-end flows, and anything that needs a real allocator.
+//! These tests run via `zig build test-integration`. PQC sign/KEM
+//! interop test artifacts are wired as their own roots in build.zig
+//! (tests/pqc_sig_interop.zig, tests/pqc_kem_interop.zig); this file
+//! holds module-surface integration checks.
 
 const std = @import("std");
 const lib = @import("fips");
 
-test "integration: library initializes successfully" {
-    try lib.init(.{});
-}
-
-test "integration: custom configuration" {
-    try lib.init(.{
-        .debug = true,
-        .max_retries = 5,
-        .timeout_ms = 60_000,
-    });
-}
-
 test "integration: version is defined" {
     try std.testing.expectEqualStrings("0.1.0", lib.version);
-}
-
-test "integration: invalid configuration is rejected" {
-    try std.testing.expectError(error.InvalidConfig, lib.init(.{ .max_retries = 0 }));
 }

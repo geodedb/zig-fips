@@ -24,7 +24,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const tsan = b.option(bool, "tsan", "Enable ThreadSanitizer on test artifacts") orelse false;
-    const no_cli = b.option(bool, "no-cli", "Skip building the CLI executable (library-only build)") orelse false;
 
     // ------------------------------------------------------------------
     // Library module — primary public surface for downstream consumers.
@@ -42,34 +41,8 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(static_lib);
 
-    const build_step = b.step("build", "Build the standalone library and CLI");
+    const build_step = b.step("build", "Build the standalone library (library-only; no CLI)");
     build_step.dependOn(&static_lib.step);
-
-    // ------------------------------------------------------------------
-    // CLI executable — links against the library module.
-    // Disable with `-Dno-cli` for pure-library builds.
-    // ------------------------------------------------------------------
-    if (!no_cli) {
-        const cli_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "fips", .module = module },
-            },
-        });
-        const cli_exe = b.addExecutable(.{
-            .name = "fips",
-            .root_module = cli_module,
-        });
-        b.installArtifact(cli_exe);
-        build_step.dependOn(&cli_exe.step);
-
-        const run_cli = b.addRunArtifact(cli_exe);
-        if (b.args) |args| run_cli.addArgs(args);
-        const run_step = b.step("run", "Run the CLI (forwards trailing args after `--`)");
-        run_step.dependOn(&run_cli.step);
-    }
 
     // ------------------------------------------------------------------
     // Check step — fast IDE feedback. Compiles unit tests without

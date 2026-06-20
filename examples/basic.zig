@@ -3,7 +3,8 @@
 
 //! Basic usage example for fips.
 //!
-//! Run with `zig build example`.
+//! Run with `zig build example`. The non-fips (std-shim) path needs no
+//! OpenSSL link; the fips backend requires `make deps` + `-Dfips=true`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -18,18 +19,9 @@ pub fn main(init: std.process.Init) !void {
 
     try out.print("fips Example (v{s})\n", .{lib.version});
     try out.writeAll("========================\n\n");
-
-    const config = lib.Config{
-        .debug = true,
-        .max_retries = 5,
-        .timeout_ms = 10_000,
-    };
-    try lib.init(config);
-
-    try out.print(
-        "Initialised with debug={}, max_retries={d}, timeout_ms={d}.\n",
-        .{ config.debug, config.max_retries, config.timeout_ms },
+    try out.writeAll(
+        "fips is a library-only crypto backend; see docs/SEAM_CONTRACT.md\n" ++
+            "for how consumers wire the -Dfips seam.\n",
     );
-    try out.writeAll("Example completed successfully!\n");
     try out.flush();
 }

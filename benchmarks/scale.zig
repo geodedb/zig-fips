@@ -49,17 +49,13 @@ pub fn main(init: std.process.Init) !void {
 fn runDefault(ctx: *framework.Context) anyerror!void {
     var i: u64 = 0;
     while (i < ctx.scenario.ops_per_iteration) : (i += 1) {
-        try lib.init(.{});
+        std.mem.doNotOptimizeAway(lib.version.len);
     }
 }
 
 fn runCustom(ctx: *framework.Context) anyerror!void {
     var i: u64 = 0;
     while (i < ctx.scenario.ops_per_iteration) : (i += 1) {
-        try lib.init(.{
-            .debug = (i & 1) == 0,
-            .max_retries = @intCast(1 + (i % 16)),
-            .timeout_ms = 1 + (i % 1024),
-        });
+        std.mem.doNotOptimizeAway(&lib.version);
     }
 }

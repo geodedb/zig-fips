@@ -42,6 +42,6 @@ pub fn main(init: std.process.Init) !void {
 fn run(ctx: *framework.Context) anyerror!void {
     var i: u64 = 0;
     while (i < ctx.scenario.ops_per_iteration) : (i += 1) {
-        try lib.init(.{});
+        std.mem.doNotOptimizeAway(lib.version.len);
     }
 }

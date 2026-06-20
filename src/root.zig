@@ -19,6 +19,7 @@ pub const Mac = @import("mac.zig").Mac;
 pub const Kdf = @import("kdf.zig").Kdf;
 pub const Aead = @import("aead.zig").Aead;
 pub const Csprng = @import("csprng.zig").Csprng;
+pub const Sig = @import("sig.zig").Sig;
 
 test "package version is set" {
     const std = @import("std");
@@ -37,4 +38,5 @@ test {
     _ = @import("kdf.zig");
     _ = @import("aead.zig");
     _ = @import("csprng.zig");
+    _ = @import("sig.zig");
 }

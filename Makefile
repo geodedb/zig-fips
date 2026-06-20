@@ -11,7 +11,7 @@ CURRENT ?= benchmarks/results/latest.json
 .PHONY: example run install help
 .PHONY: pre-commit-install pre-commit pre-commit-run
 .PHONY: bench bench-save bench-compare bench-micro scale-bench tools
-.PHONY: deps
+.PHONY: deps test-fips test-dual
 
 all: build test-unit
 
@@ -79,6 +79,24 @@ tools:
 
 deps:
 	OPENSSL_PREFIX=$(or $(OPENSSL_PREFIX),/usr/local/ssl) ./scripts/install-openssl-fips.sh
+
+# OpenSSL prefix the FIPS-backend tests link + load at runtime.
+OPENSSL_PREFIX ?= /usr/local/ssl
+
+# Shim-only path: build the std_shim parity tests with NO OpenSSL link.
+# Proves the non-fips (std.crypto) backend is self-contained.
+test-shim:
+	$(ZIG) test --dep std_shim -Mroot=tests/shim_parity.zig -Mstd_shim=src/std_shim.zig
+
+# FIPS-backend path: the full suite + interop against the OpenSSL FIPS
+# provider. OPENSSL_CONF activates fips+base for the test runtime.
+test-fips:
+	OPENSSL_CONF=$(OPENSSL_PREFIX)/ssl/openssl.cnf $(ZIG) build test -Dopenssl_path=$(OPENSSL_PREFIX) --summary all
+	OPENSSL_CONF=$(OPENSSL_PREFIX)/ssl/openssl.cnf $(ZIG) build test-integration -Dopenssl_path=$(OPENSSL_PREFIX) --summary all
+
+# Dual-mode gate (the spec's BOTH-modes constraint): the shim path AND
+# the OpenSSL FIPS-backend path must both be green.
+test-dual: test-shim test-fips
 
 dev: fmt check test-unit
 

@@ -292,3 +292,37 @@ scale-bench:
     paths:
     - benchmarks/results/scale-current.json
     expire_in: 30 days
+
+# ---------------------------------------------------------------
+# FIPS-140-3 / PQC dual-mode gate.
+#
+# `fips-deps` builds the latest OpenSSL + FIPS provider via `make deps`
+# (installs to /usr/local/ssl) and `test-fips` runs the dual-mode gate
+# (`make test-dual`): the std_shim path with NO OpenSSL link AND the
+# OpenSSL FIPS-backend path (unit + interop). Linux-only; the source
+# build needs build-essential + perl, provided by .zig-host-base + the
+# script's own prereq step.
+# ---------------------------------------------------------------
+fips-deps:
+  extends: .zig-host-base
+  stage: build
+  script:
+  - apt-get install -y --no-install-recommends perl wget
+  - make deps
+  artifacts:
+    paths:
+    - /usr/local/ssl
+    expire_in: 1 day
+  rules:
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+test-fips:
+  extends: .zig-host-base
+  stage: test
+  needs: [ "fips-deps" ]
+  script:
+  - make test-dual
+  rules:
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

@@ -11,6 +11,7 @@ CURRENT ?= benchmarks/results/latest.json
 .PHONY: example run install help
 .PHONY: pre-commit-install pre-commit pre-commit-run
 .PHONY: bench bench-save bench-compare bench-micro scale-bench tools
+.PHONY: deps
 
 all: build test-unit
 
@@ -76,6 +77,9 @@ scale-bench:
 tools:
 	$(ZIG) build tools
 
+deps:
+	OPENSSL_PREFIX=$(or $(OPENSSL_PREFIX),/usr/local/ssl) ./scripts/install-openssl-fips.sh
+
 dev: fmt check test-unit
 
 ci: clean check test-all
@@ -131,6 +135,9 @@ help:
 	@echo "  bench-micro          Run all micro-benchmarks"
 	@echo "  scale-bench          Run scale benchmark suite"
 	@echo "  tools                Build benchmark tooling artifacts"
+	@echo ""
+	@echo "Dependencies:"
+	@echo "  deps                 Build+install latest OpenSSL+FIPS provider"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  clean                Remove build artifacts"

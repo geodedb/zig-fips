@@ -15,8 +15,20 @@ pub fn linkOpenssl(b: *std.Build, m: *std.Build.Module, openssl_path: ?[]const u
     const os_tag = m.resolved_target.?.result.os.tag;
     if (openssl_path) |p| {
         m.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+        // Most x86_64 OpenSSL installs use lib64; some use lib. Both are
+        // added (a missing one only yields a benign linker warning).
         m.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib64", .{p}) });
         m.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{p}) });
+        // RPATH the prefix libdirs so the FIPS-build libcrypto (which has
+        // the fips.so provider in its compiled-in MODULESDIR) is the one
+        // loaded at RUNTIME — not a system libcrypto that lacks the FIPS
+        // provider config. Without this the binary links fine but
+        // OSSL_PROVIDER_load(ctx, "fips") fails because the system
+        // libcrypto resolves first on the loader path.
+        if (os_tag != .windows) {
+            m.addRPath(.{ .cwd_relative = b.fmt("{s}/lib64", .{p}) });
+            m.addRPath(.{ .cwd_relative = b.fmt("{s}/lib", .{p}) });
+        }
     } else if (os_tag == .windows) {
         if (b.graph.environ_map.get("VCPKG_ROOT")) |root| {
             m.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{root}) });

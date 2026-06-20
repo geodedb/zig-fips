@@ -25,14 +25,28 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const tsan = b.option(bool, "tsan", "Enable ThreadSanitizer on test artifacts") orelse false;
 
+    const link = @import("src/link.zig");
+    const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
+
     // ------------------------------------------------------------------
     // Library module — primary public surface for downstream consumers.
+    // The fips backend ALWAYS links libcrypto/libssl; CI sets
+    // `-Dopenssl_path=/usr/local/ssl` to point at the FIPS build.
     // ------------------------------------------------------------------
     const module = b.addModule("fips", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    link.linkOpenssl(b, module, openssl_path);
+
+    // Raw FFI surface as an importable module for standalone link tests.
+    const ffi_module = b.addModule("ffi", .{
+        .root_source_file = b.path("src/ffi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    link.linkOpenssl(b, ffi_module, openssl_path);
 
     const static_lib = b.addLibrary(.{
         .name = "fips",
@@ -64,24 +78,55 @@ pub fn build(b: *std.Build) void {
     if (tsan) unit_tests.root_module.sanitize_thread = true;
     unit_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    const integration_root = importedModule(b, "tests/integration.zig", target, optimize, module);
+    link.linkOpenssl(b, integration_root, openssl_path);
     const integration_step = b.step("test-integration", "Run integration tests");
     const integration_tests = b.addTest(.{
-        .root_module = importedModule(b, "tests/integration.zig", target, optimize, module),
+        .root_module = integration_root,
     });
     if (tsan) integration_tests.root_module.sanitize_thread = true;
     integration_step.dependOn(&b.addRunArtifact(integration_tests).step);
 
     // Stress runs Debug under TSan so races aren't optimised away.
     const stress_optimize: std.builtin.OptimizeMode = if (tsan) .Debug else .ReleaseFast;
+    const stress_root = importedModule(b, "tests/stress.zig", target, stress_optimize, module);
+    link.linkOpenssl(b, stress_root, openssl_path);
     const stress_step = b.step("test-stress", "Run stress and load tests");
     const stress_tests = b.addTest(.{
-        .root_module = importedModule(b, "tests/stress.zig", target, stress_optimize, module),
+        .root_module = stress_root,
     });
     if (tsan) stress_tests.root_module.sanitize_thread = true;
     stress_step.dependOn(&b.addRunArtifact(stress_tests).step);
 
+    // ------------------------------------------------------------------
+    // Link smoke test — proves libcrypto is LINKED (not just headers
+    // present) by calling a real exported symbol at runtime. Rooted at
+    // tests/link_smoke.zig importing the `ffi` module.
+    // ------------------------------------------------------------------
+    const link_smoke_root = b.createModule(.{
+        .root_source_file = b.path("tests/link_smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "ffi", .module = ffi_module },
+        },
+    });
+    link.linkOpenssl(b, link_smoke_root, openssl_path);
+    const link_smoke = b.addTest(.{
+        .root_module = link_smoke_root,
+    });
+    unit_step.dependOn(&b.addRunArtifact(link_smoke).step);
+
+    // ffi @cImport version/symbol-resolution test (its own root so the
+    // header-only checks run under `zig build test`).
+    const ffi_tests = b.addTest(.{
+        .root_module = ffi_module,
+    });
+    unit_step.dependOn(&b.addRunArtifact(ffi_tests).step);
+
     const all_tests_step = b.step("test-all", "Run unit, integration, and stress suites");
     all_tests_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    all_tests_step.dependOn(&b.addRunArtifact(link_smoke).step);
     all_tests_step.dependOn(&b.addRunArtifact(integration_tests).step);
     all_tests_step.dependOn(&b.addRunArtifact(stress_tests).step);
 
@@ -169,6 +214,19 @@ pub fn build(b: *std.Build) void {
     tools_step.dependOn(&scale_bench_exe.step);
     tools_step.dependOn(&compare_bench_exe.step);
     tools_step.dependOn(&micro_example_exe.step);
+
+    // ------------------------------------------------------------------
+    // deps — provision the OpenSSL FIPS provider.
+    //
+    // `zig build deps` shells to the same script `make deps` runs, so CI
+    // can provision the FIPS provider through either entrypoint. The run
+    // has side effects (touches the system OpenSSL prefix) and must never
+    // be cached.
+    // ------------------------------------------------------------------
+    const deps_run = b.addSystemCommand(&.{"./scripts/install-openssl-fips.sh"});
+    deps_run.has_side_effects = true;
+    const deps_step = b.step("deps", "Build+install latest OpenSSL + FIPS provider (always upgrades to latest)");
+    deps_step.dependOn(&deps_run.step);
 }
 
 fn benchModule(

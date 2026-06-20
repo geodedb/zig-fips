@@ -87,6 +87,32 @@ pub fn build(b: *std.Build) void {
     if (tsan) integration_tests.root_module.sanitize_thread = true;
     integration_step.dependOn(&b.addRunArtifact(integration_tests).step);
 
+    // PQC sign/KEM interop — standalone executables that shell the FIPS
+    // OpenSSL CLI across the Zig<->CLI boundary. They are executables
+    // (not `zig test`) because std.process.run needs the `Io` that
+    // std.process.Init hands to `main`. They reach `c.*` via `fips.ffi.c`
+    // (importing the standalone `ffi` module too would re-root ffi.zig
+    // under two module graphs and trip the GAP-0020 dedup error).
+    const interop_sources = [_][]const u8{
+        "tests/pqc_sig_interop.zig",
+    };
+    for (interop_sources) |src| {
+        const interop_root = b.createModule(.{
+            .root_source_file = b.path(src),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fips", .module = module },
+            },
+        });
+        link.linkOpenssl(b, interop_root, openssl_path);
+        const interop_exe = b.addExecutable(.{
+            .name = b.fmt("interop-{s}", .{std.fs.path.stem(src)}),
+            .root_module = interop_root,
+        });
+        integration_step.dependOn(&b.addRunArtifact(interop_exe).step);
+    }
+
     // Stress runs Debug under TSan so races aren't optimised away.
     const stress_optimize: std.builtin.OptimizeMode = if (tsan) .Debug else .ReleaseFast;
     const stress_root = importedModule(b, "tests/stress.zig", target, stress_optimize, module);

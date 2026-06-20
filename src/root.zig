@@ -9,6 +9,12 @@ pub const version = "0.1.0";
 
 pub const policy = @import("policy.zig");
 
+/// Raw OpenSSL FFI surface. Re-exported so consumers/tests that already
+/// import `fips` can reach `c.*` without a SEPARATE `ffi` module root —
+/// importing the same `ffi.zig` file under two module roots triggers the
+/// Zig 0.16 module-dedup error (GAP-0020). Use `fips.ffi.c`.
+pub const ffi = @import("ffi.zig");
+
 const provider = @import("provider.zig");
 pub const assertActive = provider.assertActive;
 pub const ensureFips = provider.ensureFips;

@@ -249,3 +249,20 @@ test "RSA-PSS 2048 sign->verify round trip + tamper detect" {
     try Sig.verify(.rsa_pss, &kp, "rsa pss message", sig[0..n]);
     try std.testing.expectError(error.VerifyFailed, Sig.verify(.rsa_pss, &kp, "tampered", sig[0..n]));
 }
+
+test "ML-DSA-65 sign->verify round trip + tamper detect" {
+    var kp = try Sig.generate(.ml_dsa_65);
+    defer kp.deinit();
+    var sig: [4096]u8 = undefined;
+    const n = try Sig.sign(.ml_dsa_65, &kp, "pqc message", &sig);
+    try Sig.verify(.ml_dsa_65, &kp, "pqc message", sig[0..n]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verify(.ml_dsa_65, &kp, "x", sig[0..n]));
+}
+
+test "SLH-DSA-SHA2-128s sign->verify round trip" {
+    var kp = try Sig.generate(.slh_dsa_sha2_128s);
+    defer kp.deinit();
+    var sig: [8192]u8 = undefined;
+    const n = try Sig.sign(.slh_dsa_sha2_128s, &kp, "pqc", &sig);
+    try Sig.verify(.slh_dsa_sha2_128s, &kp, "pqc", sig[0..n]);
+}

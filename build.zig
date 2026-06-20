@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const tsan = b.option(bool, "tsan", "Enable ThreadSanitizer on test artifacts") orelse false;
+    const repro_dedup = b.option(bool, "repro_dedup", "Wire the GAP-0020 module-dedup BAD shape (two build_options instances) to reproduce the bug") orelse false;
 
     const link = @import("src/link.zig");
     const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
@@ -203,6 +204,61 @@ pub fn build(b: *std.Build) void {
     });
     const seam_test = b.addTest(.{ .root_module = seam_test_root });
     unit_step.dependOn(&b.addRunArtifact(seam_test).step);
+
+    // ------------------------------------------------------------------
+    // GAP-0020 module-dedup repro (gated behind -Drepro_dedup).
+    //
+    // Two helper graphs both reach the SAME policy.zig file. With
+    // repro_dedup=true we (deliberately, the BAD shape) give each graph
+    // its OWN build_options instance (.createModule() twice) — Zig 0.16
+    // then errors `file 'src/policy.zig' exists in modules
+    // 'build_options' and 'build_options0'`. With repro_dedup=false (the
+    // default / canonical shape) BOTH graphs share the SINGLE
+    // build_options instance and the build succeeds.
+    // ------------------------------------------------------------------
+    const policy_mod = b.addModule("policy", .{
+        .root_source_file = b.path("src/policy.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const repro_opts_a = b.addOptions();
+    repro_opts_a.addOption(bool, "repro", true);
+    const repro_mod_a = repro_opts_a.createModule();
+    // Canonical: reuse the SAME instance. BAD: a second instance.
+    const repro_mod_b = if (repro_dedup) blk: {
+        const repro_opts_b = b.addOptions();
+        repro_opts_b.addOption(bool, "repro", true);
+        break :blk repro_opts_b.createModule();
+    } else repro_mod_a;
+    const graph_a = b.createModule(.{
+        .root_source_file = b.path("tests/dedup_graph_a.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = repro_mod_a },
+            .{ .name = "policy", .module = policy_mod },
+        },
+    });
+    const graph_b = b.createModule(.{
+        .root_source_file = b.path("tests/dedup_graph_b.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = repro_mod_b },
+            .{ .name = "policy", .module = policy_mod },
+        },
+    });
+    const dedup_root = b.createModule(.{
+        .root_source_file = b.path("tests/dedup_repro_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "graph_a", .module = graph_a },
+            .{ .name = "graph_b", .module = graph_b },
+        },
+    });
+    const dedup_test = b.addTest(.{ .root_module = dedup_root });
+    unit_step.dependOn(&b.addRunArtifact(dedup_test).step);
 
     const all_tests_step = b.step("test-all", "Run unit, integration, and stress suites");
     all_tests_step.dependOn(&b.addRunArtifact(unit_tests).step);

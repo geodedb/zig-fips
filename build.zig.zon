@@ -15,6 +15,7 @@
         "benchmarks",
         "docs",
         "scripts",
+        "templates",
         "LICENSE",
         "NOTICE",
         "README.md",

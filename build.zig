@@ -174,6 +174,36 @@ pub fn build(b: *std.Build) void {
     const shim_parity = b.addTest(.{ .root_module = shim_parity_root });
     unit_step.dependOn(&b.addRunArtifact(shim_parity).step);
 
+    // ------------------------------------------------------------------
+    // Seam template meta-test — wire templates/crypto_backend.zig with a
+    // synthetic build_options (fips=false) + std_shim, proving the seam
+    // selects the shim and re-exports the API. (Only the fips=false
+    // branch is wired here; the fips=true branch is the consumer's own
+    // build and is exercised by the rest of this package's tests.)
+    // ------------------------------------------------------------------
+    const seam_opts = b.addOptions();
+    seam_opts.addOption(bool, "fips", false);
+    const seam_opts_mod = seam_opts.createModule();
+    const seam_root = b.createModule(.{
+        .root_source_file = b.path("templates/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = seam_opts_mod },
+            .{ .name = "std_shim", .module = std_shim_module },
+        },
+    });
+    const seam_test_root = b.createModule(.{
+        .root_source_file = b.path("tests/seam_template_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "crypto_backend", .module = seam_root },
+        },
+    });
+    const seam_test = b.addTest(.{ .root_module = seam_test_root });
+    unit_step.dependOn(&b.addRunArtifact(seam_test).step);
+
     const all_tests_step = b.step("test-all", "Run unit, integration, and stress suites");
     all_tests_step.dependOn(&b.addRunArtifact(unit_tests).step);
     all_tests_step.dependOn(&b.addRunArtifact(link_smoke).step);

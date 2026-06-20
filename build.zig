@@ -151,6 +151,29 @@ pub fn build(b: *std.Build) void {
     });
     unit_step.dependOn(&b.addRunArtifact(ffi_tests).step);
 
+    // ------------------------------------------------------------------
+    // std_shim — the canonical non-fips backend. Rooted at
+    // src/std_shim.zig so its sibling `@import("policy.zig")` resolves.
+    // NO OpenSSL link: the shim must build with zero OpenSSL coupling.
+    // Exposed as a module so the shim parity test (and the seam template
+    // meta-test in Task 11) can import it.
+    // ------------------------------------------------------------------
+    const std_shim_module = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const shim_parity_root = b.createModule(.{
+        .root_source_file = b.path("tests/shim_parity.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "std_shim", .module = std_shim_module },
+        },
+    });
+    const shim_parity = b.addTest(.{ .root_module = shim_parity_root });
+    unit_step.dependOn(&b.addRunArtifact(shim_parity).step);
+
     const all_tests_step = b.step("test-all", "Run unit, integration, and stress suites");
     all_tests_step.dependOn(&b.addRunArtifact(unit_tests).step);
     all_tests_step.dependOn(&b.addRunArtifact(link_smoke).step);

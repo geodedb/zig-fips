@@ -95,6 +95,7 @@ pub fn build(b: *std.Build) void {
     // under two module graphs and trip the GAP-0020 dedup error).
     const interop_sources = [_][]const u8{
         "tests/pqc_sig_interop.zig",
+        "tests/pqc_kem_interop.zig",
     };
     for (interop_sources) |src| {
         const interop_root = b.createModule(.{

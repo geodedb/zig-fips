@@ -17,6 +17,8 @@ pub const libCtx = provider.libCtx;
 pub const Hash = @import("hash.zig").Hash;
 pub const Mac = @import("mac.zig").Mac;
 pub const Kdf = @import("kdf.zig").Kdf;
+pub const Aead = @import("aead.zig").Aead;
+pub const Csprng = @import("csprng.zig").Csprng;
 
 test "package version is set" {
     const std = @import("std");
@@ -33,4 +35,6 @@ test {
     _ = @import("hash.zig");
     _ = @import("mac.zig");
     _ = @import("kdf.zig");
+    _ = @import("aead.zig");
+    _ = @import("csprng.zig");
 }

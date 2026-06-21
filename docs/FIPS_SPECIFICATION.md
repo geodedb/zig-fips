@@ -234,3 +234,29 @@ local dependency or a non-portable code path.
   behind `*cross-os-rules` (default branch / schedule / `RUN_CROSS_OS=true`
   / manual), mirroring the existing `zig-*-macos` / `zig-*-windows` jobs
   in `fts-storage/.gitlab-ci.yml`.
+
+---
+
+## Strict Enforcement — Verified
+
+Workspace-wide **ZL109 (`fips_unguarded_crypto`) = 0**: under `-Dfips=true` no
+`std.crypto` algorithm executes in any security path. All FIPS-approved crypto
+routes through the OpenSSL FIPS-validated provider; non-approved algorithms
+fail closed or `@compileError`. The non-FIPS (`-Dfips=false`) standard-library
+paths are comptime-dead under fips. Enforced automatically by the ZL109 lint
+gate (`zig-fips-lint` ci-catalog component) over each repo's `src/`.
+
+### Capabilities removed / fail-closed under `-Dfips=true`
+- **mcp**: WebSocket `Sec-WebSocket-Accept` (SHA-1, RFC 6455) → `@compileError`; front MCP with a TLS-terminating proxy or non-WebSocket transport.
+- **oauth**: OAuth 1.0a (HMAC-SHA1, RFC 5849) → `@compileError`; use OAuth 2.0.
+- **tls**: standalone X25519 key agreement → fails closed; only ECDHE P-256/384 and the `X25519MLKEM768` hybrid are offered under fips.
+- **tls / quic / fle**: ChaCha20-Poly1305 → rejected; AES-GCM used.
+- **encrypted-fs**: Argon2id → PBKDF2 (SP 800-132); XChaCha20-Poly1305 → AES-256-GCM.
+- **tls x509 / certificate verify**: any (curve, hash) or RSA scheme outside the validated set → certificate rejected (fail closed); never a std fallback.
+- non-security hashing (BLAKE3 snapshot integrity, CRC32 checksums, Wyhash maps), constant-time compare (`timing_safe`), and memory zeroing (`secureZero`) remain available (not FIPS-governed; annotated `// fips-exempt: non-security`).
+
+### Deferred (publish-time) follow-ups
+- Swap each consumer's local `.path` `fips`/`tls` dependency to `b.lazyDependency` `git+https?ref=<tag>#<hash>` once the `fips` and `tls` packages are pushed and tagged.
+- Add `std_shim` CSPRNG branches for macOS/Windows (current shim CSPRNG is Linux `getrandom`).
+- Re-pin the `zig-fips-lint` `zlint_ref` to a published tag/SHA once ZL109 lands on `zlint`'s default branch.
+- Port `wireguard` application sources to Zig 0.16 `std.Io` (pre-existing drift, unrelated to FIPS; the FIPS seam already passes via `zig build test-fips-seam`).

@@ -46,6 +46,19 @@ fn sigDigest(alg: policy.SigAlg) ?[:0]const u8 {
     };
 }
 
+/// EVP_MD fetch name for an explicitly-chosen digest. Only SHA-2 is
+/// permitted for classical RSA/ECDSA verify (FIPS 186-5); SHA-3 is not a
+/// FIPS-approved digest for these signature schemes, so callers passing a
+/// SHA-3 variant get `error.Unsupported`.
+fn explicitDigest(digest: policy.Hash) Sig.Error![:0]const u8 {
+    return switch (digest) {
+        .sha256 => "SHA2-256",
+        .sha384 => "SHA2-384",
+        .sha512 => "SHA2-512",
+        .sha3_256, .sha3_384, .sha3_512 => error.Unsupported,
+    };
+}
+
 pub const Sig = struct {
     pub const Error = error{ Unsupported, VerifyFailed, OpensslFailure };
 
@@ -88,6 +101,48 @@ pub const Sig = struct {
                 },
             } orelse return error.OpensslFailure;
             return .{ .pkey = pkey };
+        }
+
+        /// Import an RSA public key from a DER-encoded SubjectPublicKeyInfo
+        /// (X.509 SPKI). Identical decode path to `fromPublicBytes` for the
+        /// `.der` family, exposed under an RSA-specific name so RSA-only
+        /// callers don't have to thread a `SigAlg`.
+        pub fn fromRsaSpki(der: []const u8) Error!KeyPair {
+            provider.assertActive();
+            var pp: [*c]const u8 = der.ptr;
+            const pkey = c.d2i_PUBKEY(null, &pp, @intCast(der.len)) orelse return error.OpensslFailure;
+            return .{ .pkey = pkey };
+        }
+
+        /// Import an RSA public key from raw big-endian modulus `n` and
+        /// public exponent `e` components (the JWKS form: base64url-decoded
+        /// `n`/`e`). Builds an `EVP_PKEY` via `EVP_PKEY_fromdata` under the
+        /// fips lib context. The caller owns the returned KeyPair (deinit).
+        pub fn fromRsaComponents(n: []const u8, e: []const u8) Error!KeyPair {
+            provider.assertActive();
+
+            // JWKS components are big-endian (network byte order). BN_bin2bn
+            // parses big-endian into a BIGNUM; OSSL_PARAM_BLD_push_BN then
+            // serializes it into the native param representation OpenSSL's
+            // RSA keymgmt expects, so we never hand-roll endianness here.
+            const bn_n = c.BN_bin2bn(n.ptr, @intCast(n.len), null) orelse return error.OpensslFailure;
+            defer c.BN_free(bn_n);
+            const bn_e = c.BN_bin2bn(e.ptr, @intCast(e.len), null) orelse return error.OpensslFailure;
+            defer c.BN_free(bn_e);
+
+            const bld = c.OSSL_PARAM_BLD_new() orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_BLD_free(bld);
+            if (c.OSSL_PARAM_BLD_push_BN(bld, c.OSSL_PKEY_PARAM_RSA_N, bn_n) != 1) return error.OpensslFailure;
+            if (c.OSSL_PARAM_BLD_push_BN(bld, c.OSSL_PKEY_PARAM_RSA_E, bn_e) != 1) return error.OpensslFailure;
+            const params = c.OSSL_PARAM_BLD_to_param(bld) orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_free(params);
+
+            const pctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), "RSA", "fips=yes") orelse return error.OpensslFailure;
+            defer c.EVP_PKEY_CTX_free(pctx);
+            if (c.EVP_PKEY_fromdata_init(pctx) != 1) return error.OpensslFailure;
+            var pkey: ?*c.EVP_PKEY = null;
+            if (c.EVP_PKEY_fromdata(pctx, &pkey, c.EVP_PKEY_PUBLIC_KEY, params) != 1) return error.OpensslFailure;
+            return .{ .pkey = pkey orelse return error.OpensslFailure };
         }
     };
 
@@ -154,6 +209,75 @@ pub const Sig = struct {
         return error.OpensslFailure;
     }
 
+    /// Verify a classical RSA signature over `msg` with an EXPLICIT digest
+    /// (SHA-256/384/512), routing through the FIPS module. `scheme` picks
+    /// RSASSA-PKCS1-v1_5 (`.pkcs1`) or RSASSA-PSS (`.pss`); for PSS the
+    /// MGF1 digest is the same as `digest` and the salt length defaults to
+    /// the digest length (OpenSSL's default), matching JOSE PS256/384/512.
+    /// `kp` must hold an RSA public key (e.g. from `fromRsaComponents` or
+    /// `fromRsaSpki`). Returns `error.VerifyFailed` on a bad signature and
+    /// `error.Unsupported` for a non-SHA-2 digest.
+    pub fn verifyRsa(
+        scheme: policy.RsaScheme,
+        digest: policy.Hash,
+        kp: *KeyPair,
+        msg: []const u8,
+        sig: []const u8,
+    ) Error!void {
+        provider.assertActive();
+        const mdname = try explicitDigest(digest);
+        const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
+        defer c.EVP_MD_CTX_free(ctx);
+
+        var pctx: ?*c.EVP_PKEY_CTX = null;
+        if (c.EVP_DigestVerifyInit_ex(ctx, &pctx, mdname.ptr, provider.libCtx(), "fips=yes", kp.pkey, null) != 1) {
+            return error.OpensslFailure;
+        }
+        switch (scheme) {
+            .pkcs1 => {}, // PKCS1-v1.5 is the EVP RSA default padding.
+            .pss => try setPssPadDigest(pctx, mdname),
+        }
+
+        const rc = c.EVP_DigestVerify(ctx, sig.ptr, sig.len, msg.ptr, msg.len);
+        if (rc == 1) return;
+        if (rc == 0) return error.VerifyFailed;
+        return error.OpensslFailure;
+    }
+
+    /// Verify an ECDSA signature over `msg` with an EXPLICIT (curve,
+    /// digest) pair, so off-diagonal combinations (e.g. P-256 with
+    /// SHA-384) route through the FIPS module rather than being pinned to
+    /// the curve's "natural" digest. `alg` must be one of the `ecdsa_p*`
+    /// curves; `digest` selects the EVP_MD. Returns `error.VerifyFailed`
+    /// on a bad signature and `error.Unsupported` for a non-ECDSA `alg` or
+    /// a non-SHA-2 digest.
+    pub fn verifyEcdsa(
+        alg: policy.SigAlg,
+        digest: policy.Hash,
+        kp: *KeyPair,
+        msg: []const u8,
+        sig: []const u8,
+    ) Error!void {
+        provider.assertActive();
+        switch (alg) {
+            .ecdsa_p256, .ecdsa_p384, .ecdsa_p521 => {},
+            else => return error.Unsupported,
+        }
+        const mdname = try explicitDigest(digest);
+        const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
+        defer c.EVP_MD_CTX_free(ctx);
+
+        var pctx: ?*c.EVP_PKEY_CTX = null;
+        if (c.EVP_DigestVerifyInit_ex(ctx, &pctx, mdname.ptr, provider.libCtx(), "fips=yes", kp.pkey, null) != 1) {
+            return error.OpensslFailure;
+        }
+
+        const rc = c.EVP_DigestVerify(ctx, sig.ptr, sig.len, msg.ptr, msg.len);
+        if (rc == 1) return;
+        if (rc == 0) return error.VerifyFailed;
+        return error.OpensslFailure;
+    }
+
     fn initSignDigest(alg: policy.SigAlg, ctx: *c.EVP_MD_CTX, kp: *KeyPair) Error!void {
         var pctx: ?*c.EVP_PKEY_CTX = null;
         const mdname: [*c]const u8 = if (sigDigest(alg)) |d| d.ptr else null;
@@ -176,6 +300,22 @@ pub const Sig = struct {
         const p = pctx orelse return error.OpensslFailure;
         var params = [_]c.OSSL_PARAM{
             c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_PAD_MODE, @constCast(@as([:0]const u8, "pss").ptr), 0),
+            c.OSSL_PARAM_construct_end(),
+        };
+        if (c.EVP_PKEY_CTX_set_params(p, &params) != 1) return error.OpensslFailure;
+    }
+
+    /// PSS padding with an explicit digest: sets pad-mode=pss and pins both
+    /// the PSS hash and the MGF1 hash to `mdname`. The init digest already
+    /// fixes the message digest; pinning MGF1 here makes the off-diagonal
+    /// "digest chosen at call time" path unambiguous (PS256/384/512 use the
+    /// same digest for the hash and the mask generation function).
+    fn setPssPadDigest(pctx: ?*c.EVP_PKEY_CTX, mdname: [:0]const u8) Error!void {
+        const p = pctx orelse return error.OpensslFailure;
+        var params = [_]c.OSSL_PARAM{
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_PAD_MODE, @constCast(@as([:0]const u8, "pss").ptr), 0),
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_DIGEST, @constCast(mdname.ptr), 0),
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_MGF1_DIGEST, @constCast(mdname.ptr), 0),
             c.OSSL_PARAM_construct_end(),
         };
         if (c.EVP_PKEY_CTX_set_params(p, &params) != 1) return error.OpensslFailure;
@@ -265,4 +405,169 @@ test "SLH-DSA-SHA2-128s sign->verify round trip" {
     var sig: [8192]u8 = undefined;
     const n = try Sig.sign(.slh_dsa_sha2_128s, &kp, "pqc", &sig);
     try Sig.verify(.slh_dsa_sha2_128s, &kp, "pqc", sig[0..n]);
+}
+
+// --------------------------------------------------------------------
+// Explicit-digest verify KATs (Task: route ALL classical VERIFY through
+// the FIPS module). Each KAT signs with a chosen padding+digest via raw
+// EVP and then verifies through the NEW seam API, proving the explicit
+// digest selects the matching EVP_MD with "fips=yes".
+// --------------------------------------------------------------------
+
+/// Sign `msg` with RSA `scheme`+`digest` straight through EVP under the
+/// fips lib context. Returns the signature length. Used only by KATs to
+/// produce a known-answer the verify path must accept.
+fn rsaSignExplicit(
+    scheme: policy.RsaScheme,
+    digest: policy.Hash,
+    kp: *Sig.KeyPair,
+    msg: []const u8,
+    sig_out: []u8,
+) !usize {
+    const mdname: [:0]const u8 = switch (digest) {
+        .sha256 => "SHA2-256",
+        .sha384 => "SHA2-384",
+        .sha512 => "SHA2-512",
+        else => return error.Unsupported,
+    };
+    const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
+    defer c.EVP_MD_CTX_free(ctx);
+    var pctx: ?*c.EVP_PKEY_CTX = null;
+    if (c.EVP_DigestSignInit_ex(ctx, &pctx, mdname.ptr, provider.libCtx(), "fips=yes", kp.pkey, null) != 1) return error.OpensslFailure;
+    if (scheme == .pss) {
+        const p = pctx.?;
+        var params = [_]c.OSSL_PARAM{
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_PAD_MODE, @constCast(@as([:0]const u8, "pss").ptr), 0),
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_DIGEST, @constCast(mdname.ptr), 0),
+            c.OSSL_PARAM_construct_utf8_string(c.OSSL_SIGNATURE_PARAM_MGF1_DIGEST, @constCast(mdname.ptr), 0),
+            c.OSSL_PARAM_construct_end(),
+        };
+        if (c.EVP_PKEY_CTX_set_params(p, &params) != 1) return error.OpensslFailure;
+    }
+    var siglen: usize = sig_out.len;
+    if (c.EVP_DigestSign(ctx, sig_out.ptr, &siglen, msg.ptr, msg.len) != 1) return error.OpensslFailure;
+    return siglen;
+}
+
+/// Sign `msg` with ECDSA over `kp`'s curve using an explicit `digest`.
+fn ecdsaSignExplicit(digest: policy.Hash, kp: *Sig.KeyPair, msg: []const u8, sig_out: []u8) !usize {
+    const mdname: [:0]const u8 = switch (digest) {
+        .sha256 => "SHA2-256",
+        .sha384 => "SHA2-384",
+        .sha512 => "SHA2-512",
+        else => return error.Unsupported,
+    };
+    const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
+    defer c.EVP_MD_CTX_free(ctx);
+    var pctx: ?*c.EVP_PKEY_CTX = null;
+    if (c.EVP_DigestSignInit_ex(ctx, &pctx, mdname.ptr, provider.libCtx(), "fips=yes", kp.pkey, null) != 1) return error.OpensslFailure;
+    var siglen: usize = sig_out.len;
+    if (c.EVP_DigestSign(ctx, sig_out.ptr, &siglen, msg.ptr, msg.len) != 1) return error.OpensslFailure;
+    return siglen;
+}
+
+test "RSA-PKCS1 verifyRsa KAT: SHA-256/384/512 each route via explicit digest" {
+    var kp = try Sig.generate(.rsa_pkcs1);
+    defer kp.deinit();
+    const msg = "fips rsa pkcs1 known-answer";
+    inline for (.{ policy.Hash.sha256, policy.Hash.sha384, policy.Hash.sha512 }) |dg| {
+        var sig: [512]u8 = undefined;
+        const n = try rsaSignExplicit(.pkcs1, dg, &kp, msg, &sig);
+        try Sig.verifyRsa(.pkcs1, dg, &kp, msg, sig[0..n]);
+        try std.testing.expectError(error.VerifyFailed, Sig.verifyRsa(.pkcs1, dg, &kp, "tampered", sig[0..n]));
+    }
+    // A signature made with SHA-256 must NOT verify as SHA-512 (digest is
+    // genuinely selected by the param, not ignored).
+    var sig256: [512]u8 = undefined;
+    const n256 = try rsaSignExplicit(.pkcs1, .sha256, &kp, msg, &sig256);
+    try std.testing.expectError(error.VerifyFailed, Sig.verifyRsa(.pkcs1, .sha512, &kp, msg, sig256[0..n256]));
+}
+
+test "RSA-PSS verifyRsa KAT: SHA-256/384/512 each route via explicit digest" {
+    var kp = try Sig.generate(.rsa_pss);
+    defer kp.deinit();
+    const msg = "fips rsa pss known-answer";
+    inline for (.{ policy.Hash.sha256, policy.Hash.sha384, policy.Hash.sha512 }) |dg| {
+        var sig: [512]u8 = undefined;
+        const n = try rsaSignExplicit(.pss, dg, &kp, msg, &sig);
+        try Sig.verifyRsa(.pss, dg, &kp, msg, sig[0..n]);
+        try std.testing.expectError(error.VerifyFailed, Sig.verifyRsa(.pss, dg, &kp, "tampered", sig[0..n]));
+    }
+}
+
+test "RSA verifyRsa rejects non-SHA-2 digest as Unsupported" {
+    var kp = try Sig.generate(.rsa_pkcs1);
+    defer kp.deinit();
+    try std.testing.expectError(error.Unsupported, Sig.verifyRsa(.pkcs1, .sha3_256, &kp, "x", "y"));
+}
+
+test "RSA fromRsaComponents (n,e) import round-trips a PKCS1 verify" {
+    // Generate a key, extract its (n, e) as big-endian (JWKS form), import
+    // via fromRsaComponents, and verify a signature made by the original.
+    var kp = try Sig.generate(.rsa_pkcs1);
+    defer kp.deinit();
+
+    var bn_n: ?*c.BIGNUM = null;
+    var bn_e: ?*c.BIGNUM = null;
+    try std.testing.expect(c.EVP_PKEY_get_bn_param(kp.pkey, c.OSSL_PKEY_PARAM_RSA_N, &bn_n) == 1);
+    try std.testing.expect(c.EVP_PKEY_get_bn_param(kp.pkey, c.OSSL_PKEY_PARAM_RSA_E, &bn_e) == 1);
+    defer c.BN_free(bn_n);
+    defer c.BN_free(bn_e);
+
+    var n_buf: [512]u8 = undefined;
+    var e_buf: [16]u8 = undefined;
+    const n_len = c.BN_bn2bin(bn_n, &n_buf);
+    const e_len = c.BN_bn2bin(bn_e, &e_buf);
+    try std.testing.expect(n_len > 0 and e_len > 0);
+
+    var imported = try Sig.KeyPair.fromRsaComponents(n_buf[0..@intCast(n_len)], e_buf[0..@intCast(e_len)]);
+    defer imported.deinit();
+
+    const msg = "jwks (n,e) import round-trip";
+    var sig: [512]u8 = undefined;
+    const slen = try rsaSignExplicit(.pkcs1, .sha256, &kp, msg, &sig);
+    try Sig.verifyRsa(.pkcs1, .sha256, &imported, msg, sig[0..slen]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verifyRsa(.pkcs1, .sha256, &imported, "altered", sig[0..slen]));
+}
+
+test "RSA fromRsaSpki (DER SPKI) import round-trips a PSS verify" {
+    var kp = try Sig.generate(.rsa_pss);
+    defer kp.deinit();
+    var der: [1024]u8 = undefined;
+    var p: [*c]u8 = &der;
+    const der_len = c.i2d_PUBKEY(kp.pkey, &p);
+    try std.testing.expect(der_len > 0);
+    var imported = try Sig.KeyPair.fromRsaSpki(der[0..@intCast(der_len)]);
+    defer imported.deinit();
+
+    const msg = "spki der import round-trip";
+    var sig: [512]u8 = undefined;
+    const slen = try rsaSignExplicit(.pss, .sha384, &kp, msg, &sig);
+    try Sig.verifyRsa(.pss, .sha384, &imported, msg, sig[0..slen]);
+}
+
+test "ECDSA P-256 with SHA-384 off-diagonal verify routes" {
+    var kp = try Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+    const msg = "off-diagonal p256/sha384";
+    var sig: [128]u8 = undefined;
+    const n = try ecdsaSignExplicit(.sha384, &kp, msg, &sig);
+    try Sig.verifyEcdsa(.ecdsa_p256, .sha384, &kp, msg, sig[0..n]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verifyEcdsa(.ecdsa_p256, .sha384, &kp, "tampered", sig[0..n]));
+}
+
+test "ECDSA P-384 with SHA-256 off-diagonal verify routes" {
+    var kp = try Sig.generate(.ecdsa_p384);
+    defer kp.deinit();
+    const msg = "off-diagonal p384/sha256";
+    var sig: [128]u8 = undefined;
+    const n = try ecdsaSignExplicit(.sha256, &kp, msg, &sig);
+    try Sig.verifyEcdsa(.ecdsa_p384, .sha256, &kp, msg, sig[0..n]);
+}
+
+test "verifyEcdsa rejects RSA alg and non-SHA-2 digest as Unsupported" {
+    var kp = try Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+    try std.testing.expectError(error.Unsupported, Sig.verifyEcdsa(.rsa_pss, .sha256, &kp, "x", "y"));
+    try std.testing.expectError(error.Unsupported, Sig.verifyEcdsa(.ecdsa_p256, .sha3_256, &kp, "x", "y"));
 }

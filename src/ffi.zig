@@ -9,6 +9,8 @@ pub const c = @cImport({
     @cInclude("openssl/provider.h");
     @cInclude("openssl/core_names.h");
     @cInclude("openssl/params.h");
+    @cInclude("openssl/param_build.h"); // OSSL_PARAM_BLD_* (RSA from n,e import)
+    @cInclude("openssl/bn.h"); // BN_bin2bn (JWKS big-endian RSA components)
     @cInclude("openssl/rand.h");
     @cInclude("openssl/kdf.h"); // EVP_KDF_*, EVP_KDF_HKDF_MODE_*
     @cInclude("openssl/decoder.h"); // OSSL_DECODER_* (key import)

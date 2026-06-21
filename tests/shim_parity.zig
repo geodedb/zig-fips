@@ -159,6 +159,43 @@ test "shim RSA + PQC import report Unsupported (fips-only)" {
     try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromPublicBytes(.rsa_pss, "x"));
     try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromPrivateBytes(.ml_dsa_65, "x"));
     try std.testing.expectError(error.Unsupported, shim.Sig.generate(.rsa_pss));
+    // New RSA import paths are fips-only in the shim.
+    try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromRsaSpki("x"));
+    try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromRsaComponents("n", "e"));
+}
+test "shim verifyRsa is fips-only (Unsupported)" {
+    var kp = try shim.Sig.generate(.ecdsa_p256); // any keypair; RSA path is unconditional Unsupported
+    defer kp.deinit();
+    try std.testing.expectError(error.Unsupported, shim.Sig.verifyRsa(.pkcs1, .sha256, &kp, "m", "s"));
+    try std.testing.expectError(error.Unsupported, shim.Sig.verifyRsa(.pss, .sha384, &kp, "m", "s"));
+}
+test "shim verifyEcdsa off-diagonal P-256/SHA-384 routes via std" {
+    var kp = try shim.Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+    const msg = "shim off-diagonal p256/sha384";
+    // Sign with the matching off-diagonal std scheme, then verify via seam.
+    const Scheme = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha384);
+    var pub_sec1: [33]u8 = undefined;
+    const pn = try kp.publicBytes(&pub_sec1);
+    // Re-derive a signing keypair under the off-diagonal scheme is not
+    // possible from a public key; instead generate a fresh off-diagonal
+    // keypair and verify against ITS public key imported into the shim.
+    var seed: [Scheme.KeyPair.seed_length]u8 = undefined;
+    try shim.Csprng.bytes(&seed);
+    const okp = try Scheme.KeyPair.generateDeterministic(seed);
+    const sig = try okp.sign(msg, null);
+    var shim_pk = try shim.Sig.KeyPair.fromPublicBytes(.ecdsa_p256, &okp.public_key.toCompressedSec1());
+    defer shim_pk.deinit();
+    try shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, msg, &sig.toBytes());
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, "tampered", &sig.toBytes()));
+    _ = pn;
+}
+test "shim verifyEcdsa rejects P-521 / SHA-3 / RSA as Unsupported" {
+    var kp = try shim.Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+    try std.testing.expectError(error.Unsupported, shim.Sig.verifyEcdsa(.ecdsa_p521, .sha256, &kp, "m", "s"));
+    try std.testing.expectError(error.Unsupported, shim.Sig.verifyEcdsa(.ecdsa_p256, .sha3_256, &kp, "m", "s"));
+    try std.testing.expectError(error.Unsupported, shim.Sig.verifyEcdsa(.rsa_pss, .sha256, &kp, "m", "s"));
 }
 test "shim assertActive is a no-op" {
     shim.assertActive(); // must not panic when fips is off

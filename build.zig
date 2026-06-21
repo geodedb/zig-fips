@@ -24,6 +24,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const tsan = b.option(bool, "tsan", "Enable ThreadSanitizer on test artifacts") orelse false;
+    // `-Dfips=true|false` selects which backend a CONSUMER seam compiles
+    // (templates/crypto_backend.zig keys off its own `build_options.fips`).
+    // This package always builds + tests the OpenSSL FIPS backend AND the
+    // std_shim backend, so the flag is accepted here for parity with the
+    // documented consumer invocations (`zig build test -Dfips=false` runs
+    // the shim parity + seam meta-test; `-Dfips=true` runs the FIPS KATs).
+    // Both suites run regardless; the option keeps the commands valid.
+    _ = b.option(bool, "fips", "Select FIPS (true) vs std_shim (false) backend for the consumer seam") orelse true;
     const repro_dedup = b.option(bool, "repro_dedup", "Wire the GAP-0020 module-dedup BAD shape (two build_options instances) to reproduce the bug") orelse false;
 
     const link = @import("src/link.zig");

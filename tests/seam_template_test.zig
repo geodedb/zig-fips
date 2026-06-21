@@ -13,10 +13,22 @@ test "seam selects std_shim when fips=false and exposes the API" {
     var out: [32]u8 = undefined;
     _ = try backend.Hash.digest(.sha256, "abc", &out);
     backend.assertActive(); // no-op in the shim
+
+    // Streaming hash routes through the seam and equals one-shot.
+    var s = try backend.HashStream.init(.sha256);
+    defer s.deinit();
+    s.update("a");
+    s.update("bc");
+    var streamed: [32]u8 = undefined;
+    const n = try s.final(&streamed);
+    try std.testing.expectEqualSlices(u8, out[0..n], streamed[0..n]);
+
     // Re-exports resolve as the pinned named types.
     comptime {
         _ = backend.Kem.EncapResult;
         _ = backend.Sig.KeyPair;
         _ = backend.policy.Hash;
+        // HashStream alias and the nested type are the same type.
+        std.debug.assert(backend.HashStream == backend.Hash.Stream);
     }
 }

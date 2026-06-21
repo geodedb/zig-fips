@@ -12,6 +12,80 @@ test "shim SHA2-256(\"abc\") matches FIPS KAT" {
     };
     try std.testing.expectEqualSlices(u8, &expect, &out);
 }
+test "shim Stream chunked update equals one-shot SHA2-256 (same KAT as fips backend)" {
+    const msg = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    var oneshot: [32]u8 = undefined;
+    const n1 = try shim.Hash.digest(.sha256, msg, &oneshot);
+
+    var s = try shim.Hash.Stream.init(.sha256);
+    defer s.deinit();
+    s.update(msg[0..1]);
+    s.update(msg[1..10]);
+    s.update(msg[10..40]);
+    s.update(msg[40..]);
+    var streamed: [32]u8 = undefined;
+    const n2 = try s.final(&streamed);
+
+    try std.testing.expectEqual(n1, n2);
+    try std.testing.expectEqualSlices(u8, oneshot[0..n1], streamed[0..n2]);
+    const expect = [_]u8{
+        0x24, 0x8d, 0x6a, 0x61, 0xd2, 0x06, 0x38, 0xb8, 0xe5, 0xc0, 0x26, 0x93, 0x0c, 0x3e, 0x60, 0x39,
+        0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff, 0x21, 0x67, 0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1,
+    };
+    try std.testing.expectEqualSlices(u8, &expect, &streamed);
+}
+test "shim Stream clone finalizes identically to its source (SHA2-384)" {
+    var s = try shim.Hash.Stream.init(.sha384);
+    defer s.deinit();
+    s.update("hello, ");
+    s.update("world");
+
+    var clone = try s.clone();
+    defer clone.deinit();
+
+    var a: [48]u8 = undefined;
+    var b: [48]u8 = undefined;
+    const na = try s.final(&a);
+    const nb = try clone.final(&b);
+    try std.testing.expectEqual(na, nb);
+    try std.testing.expectEqualSlices(u8, a[0..na], b[0..nb]);
+}
+test "shim Stream clone diverges after independent updates (SHA2-512)" {
+    var s = try shim.Hash.Stream.init(.sha512);
+    defer s.deinit();
+    s.update("common-prefix");
+
+    var clone = try s.clone();
+    defer clone.deinit();
+
+    s.update("-A");
+    clone.update("-B");
+
+    var a: [64]u8 = undefined;
+    var b: [64]u8 = undefined;
+    _ = try s.final(&a);
+    _ = try clone.final(&b);
+    try std.testing.expect(!std.mem.eql(u8, &a, &b));
+
+    var ref_a: [64]u8 = undefined;
+    var ref_b: [64]u8 = undefined;
+    _ = try shim.Hash.digest(.sha512, "common-prefix-A", &ref_a);
+    _ = try shim.Hash.digest(.sha512, "common-prefix-B", &ref_b);
+    try std.testing.expectEqualSlices(u8, &ref_a, &a);
+    try std.testing.expectEqualSlices(u8, &ref_b, &b);
+}
+test "shim Stream supports SHA-3 (incremental == one-shot SHA3-256)" {
+    const msg = "the quick brown fox";
+    var s = try shim.Hash.Stream.init(.sha3_256);
+    defer s.deinit();
+    s.update(msg[0..4]);
+    s.update(msg[4..]);
+    var streamed: [32]u8 = undefined;
+    const n = try s.final(&streamed);
+    var oneshot: [32]u8 = undefined;
+    _ = try shim.Hash.digest(.sha3_256, msg, &oneshot);
+    try std.testing.expectEqualSlices(u8, oneshot[0..n], streamed[0..n]);
+}
 test "shim hkdfExpand matches RFC 5869 Test Case 1 (same KAT as fips backend)" {
     const prk = [_]u8{
         0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f, 0x0d, 0xc4, 0x7b, 0xba, 0x63,

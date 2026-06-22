@@ -230,7 +230,13 @@ pub const Sig = struct {
     }
 
     /// Sign `msg`, writing the signature into `sig_out`; returns the
-    /// signature length.
+    /// signature length. RSA key strength (type, >=2048 bits, FIPS 186-5
+    /// exponent) is enforced once at construction — by `assertRsaStrength` in
+    /// every `from*` import path, and by `generate` emitting a compliant key —
+    /// and an `EVP_PKEY` is immutable thereafter, so the sign/verify hot paths
+    /// do not re-derive it. INVARIANT: any future RSA `KeyPair` constructor
+    /// MUST call `assertRsaStrength`, or the weak-exponent guard (SEC-2003) is
+    /// silently bypassed for sign/verify.
     pub fn sign(alg: policy.SigAlg, kp: *KeyPair, msg: []const u8, sig_out: []u8) Error!usize {
         provider.assertActive();
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;

@@ -25,12 +25,12 @@ pub fn isPqc(alg: policy.SigAlg) bool {
     return sigFamily(alg) == .pqc;
 }
 
-fn ecGroup(alg: policy.SigAlg) [:0]const u8 {
+fn ecGroup(alg: policy.SigAlg) Sig.Error![:0]const u8 {
     return switch (alg) {
         .ecdsa_p256 => "P-256",
         .ecdsa_p384 => "P-384",
         .ecdsa_p521 => "P-521",
-        else => unreachable,
+        else => error.Unsupported,
     };
 }
 
@@ -162,7 +162,7 @@ pub const Sig = struct {
         if (family == .der and !sigIsRsa(alg)) {
             // ECDSA: set the curve group.
             var params = [_]c.OSSL_PARAM{
-                c.OSSL_PARAM_construct_utf8_string(c.OSSL_PKEY_PARAM_GROUP_NAME, @constCast(ecGroup(alg).ptr), 0),
+                c.OSSL_PARAM_construct_utf8_string(c.OSSL_PKEY_PARAM_GROUP_NAME, @constCast((try ecGroup(alg)).ptr), 0),
                 c.OSSL_PARAM_construct_end(),
             };
             if (c.EVP_PKEY_CTX_set_params(pctx, &params) != 1) return error.OpensslFailure;

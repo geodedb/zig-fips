@@ -201,15 +201,16 @@ local dependency or a non-portable code path.
      `git+https://gitlab.com/devnw/zig/tls.git#v0.1.16` with
      `.hash = "tls-0.1.16-mtEaLPssFgDXM8r7HPoDgZaqNfrAZbAhTQvk7SDmprqu"`.
    - **Consumer `.tls` swap — gated on a workspace-wide diamond cascade.**
-     A consumer cannot simply pin `tls@v0.1.16` while still pulling an
-     older `tls` transitively (e.g. quic → otel@v0.1.13 → tls@v0.1.15);
-     the `detect-diamond-deps` gate (GAP-0020 single-version rule) rejects
-     two `tls` hashes in one graph. Resolving it requires cascading
-     `tls@v0.1.16` through every transitive consumer (otel, grpc-zig,
-     metrics, config, … — several still on `feat/fips-pqc`), each a
-     release of its own. Until that cascade runs, PQC consumers such as
-     quic intentionally keep the local `.path` `tls` dep (their build.zig.zon
-     documents this as the diamond-satisfying interim state).
+     A consumer cannot pin `tls@v0.1.16` while still pulling an older `tls`
+     transitively; the `detect-diamond-deps` gate (GAP-0020 single-version
+     rule) rejects two `tls` hashes in one graph. For **quic** this was
+     resolved (2026-06-22): the only tls-bearing intermediate in quic's tree
+     was `otel`, so **otel was released as v0.1.14** pinning `tls@v0.1.16`,
+     and quic then pinned `tls@v0.1.16` + `otel@v0.1.14` → `detect-diamond-deps`
+     clean (14 packages, 0 diamonds), builds + tests green. No active
+     local-`.path` fips/tls deps remain in the workspace. Independent tls
+     consumers outside quic's tree (`ai`, `http3`) still pin older tls and
+     can be bumped separately when convenient.
    This is a mechanical, per-repo follow-up; it does not change any
    algorithm or seam behavior.
 

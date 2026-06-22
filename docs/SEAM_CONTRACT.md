@@ -36,10 +36,10 @@ fips rule enforces this).
 
 The seam re-exports these names; both the `fips` backend and `std_shim`
 implement them identically (see the spec's "Shared contract"):
-`fips_enabled`, `assertActive()`, `policy`, `Hash`, `Mac`, `Kdf` (incl.
-`hkdfExpand`), `Aead`, `Sig` (incl. `KeyPair.fromPublicBytes` /
+`fips_enabled`, `assertActive()`, `ensureFips()`, `policy`, `Hash`, `Mac`,
+`Kdf` (incl. `hkdfExpand`), `Aead`, `Sig` (incl. `KeyPair.fromPublicBytes` /
 `fromPrivateBytes`), `Kem` (incl. the pinned `Kem.EncapResult`),
-`Csprng`.
+`Csprng`, `secureZero`, `timingSafeEql`.
 
 ### Backend support matrix
 
@@ -52,6 +52,39 @@ implement them identically (see the spec's "Shared contract"):
 | `Sig` RSA | full (RSA-PSS / PKCS1) | `error.Unsupported` (std has no RSA) |
 | `Sig` ML-DSA / SLH-DSA | full | `error.Unsupported` (fips-only) |
 | `Kem` ML-KEM + hybrids | full | `error.Unsupported` (fips-only) |
+| `secureZero(buf: []u8)` | `OPENSSL_cleanse` | `@memset` + `@fence` |
+| `timingSafeEql(a, b: []const u8) bool` | `CRYPTO_memcmp` | `std.crypto.timing_safe.eql` |
+
+### Cross-backend caveats
+
+These differences are by design. Consumers MUST NOT assume byte portability
+across backends without explicitly accounting for them.
+
+**(a) Public-key encoding differs by backend for ECDSA.**
+The fips backend serialises ECDSA public keys as SPKI-DER via
+`d2i_PUBKEY`; `std_shim` uses compressed SEC1. A public key byte-string
+produced by one backend is NOT valid input for `fromPublicBytes` on the
+other backend. Consumers that store or transmit public keys must re-import
+them after switching `-Dfips` state.
+
+**(b) The `alg` argument to `Sig.sign`/`Sig.verify` has different authority
+by backend.** The fips backend uses `alg` authoritatively to select the
+algorithm and the digest. The shim derives the algorithm from the stored
+key type (the `alg` arg is advisory/informational there). Write call sites
+that always supply the intended `alg` explicitly; do not rely on the shim's
+key-driven dispatch as a substitute for a correct `alg` argument.
+
+**(c) `Aead` nonce and tag sizes are fixed on both backends.**
+`seal`/`open` require `nonce.len == 12` and `tag.len == 16`; both backends
+return `error.OpensslFailure` on length violations. There is no negotiable
+nonce or tag size.
+
+**(d) `error.Unsupported` / `error.OpensslFailure` from a FIPS fetch MUST NOT
+be treated as license to fall back to a non-FIPS algorithm (SEC-1016).**
+These errors signal that the requested algorithm is unavailable or invalid
+under the FIPS policy. A consumer that catches these errors and retries with
+a non-approved primitive has violated the FIPS boundary. The correct response
+is to propagate the error and fail closed.
 
 ## 3. GAP-0020 — the single-`build_options` dedup rule
 

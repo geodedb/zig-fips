@@ -110,6 +110,16 @@ pub fn kemName(a: KemAlg) [:0]const u8 {
     };
 }
 
+// FIPS-approved fetch-name allow-list used by `isApproved` for comptime
+// gating of consumer call sites and by the zlint ZL109 rule. This list is
+// intentionally a SUPERSET of the algorithms that have dedicated typed
+// wrappers in this seam. For example, `AES-256-CBC` is FIPS-approved for
+// CBC+HMAC constructions that a consumer may build directly via EVP; however,
+// this seam ships only AEAD GCM wrappers (`Aead`) and does NOT expose a CBC
+// wrapper (resolving GAP-0028 by documentation rather than a spurious CBC
+// AEAD type). Consumers that need CBC+HMAC must build that construction
+// themselves using the raw OpenSSL EVP API after verifying the name with
+// `policy.isApproved("AES-256-CBC")`.
 const approved_names = [_][]const u8{
     "SHA2-256",           "SHA2-384",           "SHA2-512",           "SHA3-256",           "SHA3-384",           "SHA3-512",
     "HMAC",               "HKDF",               "PBKDF2",             "AES-128-GCM",        "AES-256-GCM",        "AES-256-CBC",

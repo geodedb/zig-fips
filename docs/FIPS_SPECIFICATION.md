@@ -23,7 +23,7 @@ additionally carries a `docs/FIPS.md` with its own algorithm-swap notes.
 | Propagation | A SINGLE `build_options` module instance carries `fips` into every compile unit and into the lazy `fips` dependency (see Dependency DAG + GAP-0020 note). |
 | Seam | Call sites import `crypto_backend` (`src/crypto_backend.zig`), never `std.crypto` directly in a security path. `crypto_backend` re-exports `Aead`/`Hash`/`Mac`/`Kdf`/`Sig`/`Kem`/`Csprng`/`policy`/`assertActive` and exposes `pub const fips_enabled`. |
 | Startup self-test | `assertActive()` (no-op in the shim; in fips it loads fips+base, forces `EVP_default_properties fips=yes`, runs `OSSL_PROVIDER_self_test`, and panics if the validated module is absent). `ensureFips()` is the fallible variant returning `error.FipsProviderUnavailable`. |
-| Test gate | Every touched repo must be green with BOTH `-Dfips=false` and `-Dfips=true` (`make test-dual`). The Linux `-Dfips=true` job is a required CI gate via the `zig-fips-build` ci-catalog component, and the `zig-fips-lint` (ZL109) gate enforces the seam statically. |
+| Test gate | Every touched repo must be green with BOTH `-Dfips=false` and `-Dfips=true` (`make test-dual`). The Linux `-Dfips=true` job is a required CI gate via the `zig-fips-build` ci-catalog component. The `zig-fips-lint` (ZL109) gate is a workspace-level `ci-catalog` component applied across consumer repos; it is NOT yet wired into this foundational repo's `.gitlab-ci.yml` (tracked as a deferred follow-up — see note below). The in-repo enforcement of record is `make test-dual` + the comptime `policy.isApproved` allow-list. |
 
 ## Approved-algorithm policy
 
@@ -226,14 +226,20 @@ local dependency or a non-portable code path.
 - Provisioning: `gitlab.com/devnw/ci-catalog/zig-fips-build` runs
   `make deps` then `zig build <step> -Dfips=true -Dopenssl_path=<prefix>`
   with `OPENSSL_CONF=<prefix>/ssl/openssl.cnf`.
-- Lint gate: `gitlab.com/devnw/ci-catalog/zig-fips-lint` builds `zlint`
-  and runs `ZL109.fips_unguarded_crypto`, failing CI on unguarded
-  `std.crypto`/`std.hash` in a security path.
-- Per repo: a Linux `-Dfips=true` unit + integration job (required) plus
-  the ZL109 lint gate (required), plus macOS/Windows variants gated
-  behind `*cross-os-rules` (default branch / schedule / `RUN_CROSS_OS=true`
-  / manual), mirroring the existing `zig-*-macos` / `zig-*-windows` jobs
-  in `fts-storage/.gitlab-ci.yml`.
+- Lint gate (workspace-level, deferred for this repo): `gitlab.com/devnw/ci-catalog/zig-fips-lint`
+  builds `zlint` and runs `ZL109.fips_unguarded_crypto`, failing CI on
+  unguarded `std.crypto`/`std.hash` in a security path. **This component is
+  applied across consumer repos in the workspace and is NOT yet wired into
+  this foundational `fips` repo's `.gitlab-ci.yml`** (tracked as a deferred
+  follow-up; the `zlint_ref` also awaits a stable published tag on `zlint`'s
+  default branch). The in-repo enforcement of record for this repo is the
+  dual-mode `make test-dual` gate plus the comptime `policy.isApproved`
+  allow-list.
+- Per consumer repo: a Linux `-Dfips=true` unit + integration job (required)
+  plus the ZL109 lint gate (required once wired), plus macOS/Windows variants
+  gated behind `*cross-os-rules` (default branch / schedule /
+  `RUN_CROSS_OS=true` / manual), mirroring the existing `zig-*-macos` /
+  `zig-*-windows` jobs in `fts-storage/.gitlab-ci.yml`.
 
 ---
 
@@ -243,19 +249,27 @@ Workspace-wide **ZL109 (`fips_unguarded_crypto`) = 0**: under `-Dfips=true` no
 `std.crypto` algorithm executes in any security path. All FIPS-approved crypto
 routes through the OpenSSL FIPS-validated provider; non-approved algorithms
 fail closed or `@compileError`. The non-FIPS (`-Dfips=false`) standard-library
-paths are comptime-dead under fips. Enforced automatically by the ZL109 lint
-gate (`zig-fips-lint` ci-catalog component) over each repo's `src/`.
+paths are comptime-dead under fips.
+
+**In-repo enforcement (this repo):** the dual-mode `make test-dual` gate (both
+`-Dfips=false` and `-Dfips=true` must be green) plus the comptime
+`policy.isApproved` allow-list provide the enforcement of record. The
+`zig-fips-lint` ZL109 ci-catalog component is applied across consumer repos at
+the workspace level but is **not yet wired into this repo's `.gitlab-ci.yml`**
+(deferred follow-up pending a stable `zlint` published tag).
 
 ### Capabilities removed / fail-closed under `-Dfips=true`
+
 - **mcp**: WebSocket `Sec-WebSocket-Accept` (SHA-1, RFC 6455) → `@compileError`; front MCP with a TLS-terminating proxy or non-WebSocket transport.
 - **oauth**: OAuth 1.0a (HMAC-SHA1, RFC 5849) → `@compileError`; use OAuth 2.0.
 - **tls**: standalone X25519 key agreement → fails closed; only ECDHE P-256/384 and the `X25519MLKEM768` hybrid are offered under fips.
 - **tls / quic / fle**: ChaCha20-Poly1305 → rejected; AES-GCM used.
 - **encrypted-fs**: Argon2id → PBKDF2 (SP 800-132); XChaCha20-Poly1305 → AES-256-GCM.
 - **tls x509 / certificate verify**: any (curve, hash) or RSA scheme outside the validated set → certificate rejected (fail closed); never a std fallback.
-- non-security hashing (BLAKE3 snapshot integrity, CRC32 checksums, Wyhash maps), constant-time compare (`timing_safe`), and memory zeroing (`secureZero`) remain available (not FIPS-governed; annotated `// fips-exempt: non-security`).
+- non-security hashing (BLAKE3 snapshot integrity, CRC32 checksums, Wyhash maps), constant-time compare (`timingSafeEql`), and memory zeroing (`secureZero`) remain available (not FIPS-governed; annotated `// fips-exempt: non-security`).
 
 ### Deferred (publish-time) follow-ups
+
 - Swap each consumer's local `.path` `fips`/`tls` dependency to `b.lazyDependency` `git+https?ref=<tag>#<hash>` once the `fips` and `tls` packages are pushed and tagged.
 - Add `std_shim` CSPRNG branches for macOS/Windows (current shim CSPRNG is Linux `getrandom`).
 - Re-pin the `zig-fips-lint` `zlint_ref` to a published tag/SHA once ZL109 lands on `zlint`'s default branch.

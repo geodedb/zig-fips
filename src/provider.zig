@@ -188,7 +188,7 @@ test "concurrent first-use init is race-free and converges to one context" {
 
 test "ensureFips is all-or-nothing: retry after partial-init re-publishes" {
     // Simulate a partial-init state: provider loaded, caches populated,
-    // but g_ready not yet visible (e.g. another goroutine failed mid-init).
+    // but g_ready not yet visible (e.g. another thread failed mid-init).
     try ensureFips();
     // Force g_ready back to false to simulate a partial-init retry scenario.
     g_ready.store(false, .monotonic);

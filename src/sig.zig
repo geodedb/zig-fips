@@ -635,3 +635,21 @@ test "verifyEcdsa rejects a curve/alg mismatch" {
     defer p256.deinit();
     try std.testing.expectError(error.Unsupported, Sig.verifyEcdsa(.ecdsa_p384, .sha384, &p256, "x", "y"));
 }
+
+test "SLH-DSA all 12 variants sign->verify + tamper" {
+    const variants = [_]policy.SigAlg{
+        .slh_dsa_sha2_128s,  .slh_dsa_sha2_128f,  .slh_dsa_sha2_192s,  .slh_dsa_sha2_192f,
+        .slh_dsa_sha2_256s,  .slh_dsa_sha2_256f,  .slh_dsa_shake_128s, .slh_dsa_shake_128f,
+        .slh_dsa_shake_192s, .slh_dsa_shake_192f, .slh_dsa_shake_256s, .slh_dsa_shake_256f,
+    };
+    const a = std.testing.allocator;
+    const sig = try a.alloc(u8, 64 * 1024);
+    defer a.free(sig);
+    for (variants) |alg| {
+        var kp = try Sig.generate(alg);
+        defer kp.deinit();
+        const n = try Sig.sign(alg, &kp, "slh-dsa kat", sig);
+        try Sig.verify(alg, &kp, "slh-dsa kat", sig[0..n]);
+        try std.testing.expectError(error.VerifyFailed, Sig.verify(alg, &kp, "tampered", sig[0..n]));
+    }
+}

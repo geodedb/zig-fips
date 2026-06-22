@@ -30,6 +30,16 @@ const min_rsa_bits = 2048;
 fn assertRsaStrength(pkey: *c.EVP_PKEY) Sig.Error!void {
     if (c.EVP_PKEY_is_a(pkey, "RSA") != 1) return error.Unsupported;
     if (c.EVP_PKEY_get_bits(pkey) < min_rsa_bits) return error.Unsupported;
+    // FIPS 186-5: e must be odd and >= 65537.
+    var bn_e: ?*c.BIGNUM = null;
+    defer if (bn_e) |b| c.BN_free(b);
+    if (c.EVP_PKEY_get_bn_param(pkey, c.OSSL_PKEY_PARAM_RSA_E, &bn_e) != 1) return error.Unsupported;
+    const e = bn_e orelse return error.Unsupported;
+    if (c.BN_is_odd(e) != 1) return error.Unsupported;
+    const bn_65537 = c.BN_new() orelse return error.Unsupported;
+    defer c.BN_free(bn_65537);
+    if (c.BN_set_word(bn_65537, 65537) != 1) return error.Unsupported;
+    if (c.BN_cmp(e, bn_65537) < 0) return error.Unsupported;
 }
 
 fn ecGroup(alg: policy.SigAlg) Sig.Error![:0]const u8 {
@@ -677,6 +687,27 @@ test "SLH-DSA all 12 variants sign->verify + tamper" {
         try Sig.verify(alg, &kp, "slh-dsa kat", sig[0..n]);
         try std.testing.expectError(error.VerifyFailed, Sig.verify(alg, &kp, "tampered", sig[0..n]));
     }
+}
+
+test "fromRsaComponents rejects degenerate RSA exponents (R1 regression guard)" {
+    // FIPS 186-5: e must be odd and >= 65537.
+    // OpenSSL FIPS keymgmt does NOT reject weak exponents at EVP_PKEY_fromdata;
+    // assertRsaStrength now enforces this requirement.
+    var kp = try Sig.generate(.rsa_pkcs1);
+    defer kp.deinit();
+    var bn_n: ?*c.BIGNUM = null;
+    if (c.EVP_PKEY_get_bn_param(kp.pkey, c.OSSL_PKEY_PARAM_RSA_N, &bn_n) != 1) return error.SkipZigTest;
+    defer c.BN_free(bn_n);
+    var n_buf: [512]u8 = undefined;
+    const n_len = c.BN_bn2bin(bn_n, &n_buf);
+    if (n_len <= 0) return error.SkipZigTest;
+    const n = n_buf[0..@intCast(n_len)];
+    // e=1: below minimum, odd but < 65537 — must be rejected
+    const e1 = [_]u8{0x01};
+    try std.testing.expectError(error.Unsupported, Sig.KeyPair.fromRsaComponents(n, &e1));
+    // e=2: even — must be rejected
+    const e2 = [_]u8{0x02};
+    try std.testing.expectError(error.Unsupported, Sig.KeyPair.fromRsaComponents(n, &e2));
 }
 
 test "fromPublicBytes rejects sub-2048-bit (1024-bit) RSA SPKI DER" {

@@ -36,3 +36,4 @@ pub const Csprng = backend.Csprng;
 pub const policy = backend.policy;
 pub const assertActive = backend.assertActive;
 pub const secureZero = backend.secureZero;
+pub const timingSafeEql = backend.timingSafeEql;

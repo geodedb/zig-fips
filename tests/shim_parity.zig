@@ -222,3 +222,10 @@ test "shim secureZero wipes buffer" {
     shim.secureZero(&buf);
     try std.testing.expect(std.mem.allEqual(u8, &buf, 0));
 }
+test "shim timingSafeEql matches on equal, differs on any byte or length" {
+    const a = [_]u8{ 1, 2, 3, 4 };
+    try std.testing.expect(shim.timingSafeEql(&a, &a));
+    const b = [_]u8{ 1, 2, 3, 5 };
+    try std.testing.expect(!shim.timingSafeEql(&a, &b));
+    try std.testing.expect(!shim.timingSafeEql(&a, a[0..3]));
+}

@@ -19,6 +19,6 @@ test "csprng yields distinct non-zero draws" {
     var b: [64]u8 = undefined;
     try Csprng.bytes(&a);
     try Csprng.bytes(&b);
-    try std.testing.expect(!std.mem.eql(u8, &a, &b));
+    try std.testing.expect(!@import("util.zig").timingSafeEql(&a, &b));
     try std.testing.expect(!std.mem.allEqual(u8, &a, 0));
 }

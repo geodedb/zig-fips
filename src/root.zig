@@ -28,6 +28,7 @@ pub const Csprng = @import("csprng.zig").Csprng;
 pub const Sig = @import("sig.zig").Sig;
 pub const Kem = @import("kem.zig").Kem;
 pub const secureZero = @import("util.zig").secureZero;
+pub const timingSafeEql = @import("util.zig").timingSafeEql;
 
 test "package version is set" {
     const std = @import("std");

@@ -67,6 +67,7 @@ pub const Kem = struct {
 };
 
 test "ML-KEM-768 encap/decap shared secret agree" {
+    const util = @import("util.zig");
     var kp = try Kem.generate(.ml_kem_768);
     defer kp.deinit();
     var ct: [2048]u8 = undefined;
@@ -74,9 +75,10 @@ test "ML-KEM-768 encap/decap shared secret agree" {
     const e = try Kem.encapsulate(.ml_kem_768, &kp, &ct, &ss_a);
     var ss_b: [64]u8 = undefined;
     const d = try Kem.decapsulate(.ml_kem_768, &kp, ct[0..e.ct_len], &ss_b);
-    try std.testing.expectEqualSlices(u8, ss_a[0..e.ss_len], ss_b[0..d]);
+    try std.testing.expect(util.timingSafeEql(ss_a[0..e.ss_len], ss_b[0..d]));
 }
 test "X25519MLKEM768 hybrid encap/decap agree" {
+    const util = @import("util.zig");
     var kp = try Kem.generate(.x25519_ml_kem_768);
     defer kp.deinit();
     var ct: [2048]u8 = undefined;
@@ -84,7 +86,7 @@ test "X25519MLKEM768 hybrid encap/decap agree" {
     const e = try Kem.encapsulate(.x25519_ml_kem_768, &kp, &ct, &ss_a);
     var ss_b: [64]u8 = undefined;
     const d = try Kem.decapsulate(.x25519_ml_kem_768, &kp, ct[0..e.ct_len], &ss_b);
-    try std.testing.expectEqualSlices(u8, ss_a[0..e.ss_len], ss_b[0..d]);
+    try std.testing.expect(util.timingSafeEql(ss_a[0..e.ss_len], ss_b[0..d]));
 }
 test "EncapResult is the pinned named type" {
     comptime {

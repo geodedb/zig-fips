@@ -450,6 +450,13 @@ pub fn secureZero(buf: []u8) void {
     std.crypto.secureZero(u8, buf);
 }
 
+pub fn timingSafeEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var diff: u8 = 0;
+    for (a, b) |x, y| diff |= x ^ y;
+    return diff == 0;
+}
+
 /// No-op in the non-fips backend (there is no FIPS provider to assert).
 pub fn assertActive() void {}
 

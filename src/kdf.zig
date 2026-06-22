@@ -50,17 +50,24 @@ pub const Kdf = struct {
     }
 
     /// SP 800-132 PBKDF2. `iters` is the iteration count.
+    /// Enforces SP 800-132 minimums: iters >= 1000, salt.len >= 16 (128 bits).
+    /// Returns error.OpensslFailure if either minimum is not met.
     pub fn pbkdf2(hash: policy.Hash, password: []const u8, salt: []const u8, iters: u32, out: []u8) Error!void {
+        // SP 800-132: >= 1000 iterations, >= 128-bit salt.
+        if (iters < 1000 or salt.len < 16) return error.OpensslFailure;
+        return pbkdf2Derive(hash, password, salt, iters, out, false);
+    }
+
+    /// PKCS5=1 (relax FIPS lower-bound checks) is used ONLY by the RFC 6070/7914
+    /// known-answer tests, which use c=1 / short salts by design.
+    fn pbkdf2Derive(hash: policy.Hash, password: []const u8, salt: []const u8, iters: u32, out: []u8, relax: bool) Error!void {
         provider.assertActive();
         const kdf = c.EVP_KDF_fetch(provider.libCtx(), "PBKDF2", "fips=yes") orelse return error.OpensslFailure;
         defer c.EVP_KDF_free(kdf);
         const ctx = c.EVP_KDF_CTX_new(kdf) orelse return error.OpensslFailure;
         defer c.EVP_KDF_CTX_free(ctx);
         var iter: c_int = @intCast(iters);
-        // Disable the FIPS lower-bound checks (min salt/iter/keylen) so
-        // the RFC 6070 short-vector KAT can run; production callers should
-        // honor SP 800-132 minimums (>= 128-bit salt, >= 1000 iters).
-        var pkcs5: c_int = 1;
+        var pkcs5: c_int = if (relax) 1 else 0;
         var params = [_]c.OSSL_PARAM{
             c.OSSL_PARAM_construct_octet_string(c.OSSL_KDF_PARAM_PASSWORD, @constCast(password.ptr), password.len),
             c.OSSL_PARAM_construct_octet_string(c.OSSL_KDF_PARAM_SALT, @constCast(salt.ptr), salt.len),
@@ -106,8 +113,9 @@ test "KAT HKDF-Expand RFC 5869 Test Case 1 (expand-only)" {
 
 test "KAT PBKDF2-HMAC-SHA256 RFC 7914 vector (P=passwd, c=1)" {
     // RFC 7914 §11: PBKDF2-HMAC-SHA-256("passwd","salt",1,64).
+    // Uses the internal relaxed path (c=1 and salt<16 are below SP 800-132 minimums).
     var out: [64]u8 = undefined;
-    try Kdf.pbkdf2(.sha256, "passwd", "salt", 1, &out);
+    try Kdf.pbkdf2Derive(.sha256, "passwd", "salt", 1, &out, true);
     const expect = [_]u8{
         0x55, 0xac, 0x04, 0x6e, 0x56, 0xe3, 0x08, 0x9f, 0xec, 0x16, 0x91, 0xc2, 0x25, 0x44, 0xb6, 0x05,
         0xf9, 0x41, 0x85, 0x21, 0x6d, 0xde, 0x04, 0x65, 0xe6, 0x8b, 0x9d, 0x57, 0xc2, 0x0d, 0xac, 0xbc,
@@ -115,4 +123,10 @@ test "KAT PBKDF2-HMAC-SHA256 RFC 7914 vector (P=passwd, c=1)" {
         0x7c, 0x71, 0xb8, 0x45, 0xb1, 0xe3, 0x0b, 0xd5, 0x09, 0x11, 0x20, 0x41, 0xd3, 0xa1, 0x97, 0x83,
     };
     try std.testing.expectEqualSlices(u8, &expect, &out);
+}
+
+test "pbkdf2 rejects sub-FIPS iteration count and short salt" {
+    var out: [32]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Kdf.pbkdf2(.sha256, "pw", "0123456789abcdef", 999, &out));
+    try std.testing.expectError(error.OpensslFailure, Kdf.pbkdf2(.sha256, "pw", "shortsalt", 100_000, &out));
 }

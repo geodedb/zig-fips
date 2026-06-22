@@ -180,6 +180,8 @@ pub const Kdf = struct {
     }
 
     pub fn pbkdf2(hash: policy.Hash, password: []const u8, salt: []const u8, iters: u32, out: []u8) Error!void {
+        // SP 800-132: >= 1000 iterations, >= 128-bit salt.
+        if (iters < 1000 or salt.len < 16) return error.OpensslFailure;
         switch (hash) {
             .sha256 => std.crypto.pwhash.pbkdf2(out, password, salt, iters, std.crypto.auth.hmac.sha2.HmacSha256) catch return error.OpensslFailure,
             .sha384 => std.crypto.pwhash.pbkdf2(out, password, salt, iters, std.crypto.auth.hmac.sha2.HmacSha384) catch return error.OpensslFailure,

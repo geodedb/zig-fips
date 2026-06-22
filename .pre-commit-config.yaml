@@ -122,25 +122,22 @@ repos:
     args: [src/, build.zig, tests/, benchmarks/, examples/]
     stages: [pre-commit, pre-push]
 
-      # Zig build check (compilation) — moved to pre-push per #471 to reduce commit friction
-  - id: zig-build
-    name: zig build (compilation check)
-    entry: mise x zig@0.16.0 -- zig build
+      # FIPS dual-mode build + test gate (pre-push). scripts/pretest.sh
+      # provisions the OpenSSL FIPS provider locally if missing (make deps),
+      # compiles the FIPS-linked library, and runs the dual-mode suite
+      # (std_shim + OpenSSL FIPS) — so local pushes always exercise the FIPS
+      # backend like CI's fips-deps + test-fips, with no silent std.crypto
+      # fall-back. A bare `zig build test` cannot do this: it omits
+      # -Dopenssl_path, so the FIPS-backend tests panic on provider load.
+      # Override the prefix with OPENSSL_PREFIX (default /usr/local/ssl).
+  - id: fips-build-test
+    name: fips build + dual-mode test
+    entry: bash scripts/pretest.sh
     language: system
     files: \.(zig|zon)$
     exclude: ^(vendor/|dist/|zig-out/|\.zig-cache/)
     pass_filenames: false
-    stages: [pre-push]
-
-      # Quick unit tests
-  - id: zig-test
-    name: zig build test
-    entry: mise x zig@0.16.0 -- zig build test
-    language: system
-    files: \.(zig|zon)$
-    exclude: ^(vendor/|dist/|zig-out/|\.zig-cache/)
-    pass_filenames: false
-    stages: [pre-push]      # Only on push, may be slow
+    stages: [pre-push]      # Only on push; provisions FIPS + may be slow
 
       # Check for TODO/FIXME in committed code (warning only)
   - id: check-todos

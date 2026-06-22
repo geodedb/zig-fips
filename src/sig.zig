@@ -25,11 +25,31 @@ pub fn isPqc(alg: policy.SigAlg) bool {
     return sigFamily(alg) == .pqc;
 }
 
+const min_rsa_bits = 2048;
+
+fn assertRsaStrength(pkey: *c.EVP_PKEY) Sig.Error!void {
+    if (c.EVP_PKEY_is_a(pkey, "RSA") != 1) return error.Unsupported;
+    if (c.EVP_PKEY_get_bits(pkey) < min_rsa_bits) return error.Unsupported;
+}
+
 fn ecGroup(alg: policy.SigAlg) Sig.Error![:0]const u8 {
     return switch (alg) {
         .ecdsa_p256 => "P-256",
         .ecdsa_p384 => "P-384",
         .ecdsa_p521 => "P-521",
+        else => error.Unsupported,
+    };
+}
+
+/// OpenSSL normalises EC group names to OID short names when reading back
+/// via EVP_PKEY_get_utf8_string_param. Return the canonical OID short name
+/// for each NIST curve so the key-binding check in verifyEcdsa can compare
+/// apples-to-apples with the stored key's group.
+fn ecGroupOid(alg: policy.SigAlg) Sig.Error![:0]const u8 {
+    return switch (alg) {
+        .ecdsa_p256 => "prime256v1",
+        .ecdsa_p384 => "secp384r1",
+        .ecdsa_p521 => "secp521r1",
         else => error.Unsupported,
     };
 }
@@ -110,8 +130,10 @@ pub const Sig = struct {
         pub fn fromRsaSpki(der: []const u8) Error!KeyPair {
             provider.assertActive();
             var pp: [*c]const u8 = der.ptr;
-            const pkey = c.d2i_PUBKEY(null, &pp, try ffi.toCLong(der.len)) orelse return error.OpensslFailure;
-            return .{ .pkey = pkey };
+            const k = c.d2i_PUBKEY(null, &pp, try ffi.toCLong(der.len)) orelse return error.OpensslFailure;
+            errdefer c.EVP_PKEY_free(k);
+            try assertRsaStrength(k);
+            return .{ .pkey = k };
         }
 
         /// Import an RSA public key from raw big-endian modulus `n` and
@@ -142,7 +164,10 @@ pub const Sig = struct {
             if (c.EVP_PKEY_fromdata_init(pctx) != 1) return error.OpensslFailure;
             var pkey: ?*c.EVP_PKEY = null;
             if (c.EVP_PKEY_fromdata(pctx, &pkey, c.EVP_PKEY_PUBLIC_KEY, params) != 1) return error.OpensslFailure;
-            return .{ .pkey = pkey orelse return error.OpensslFailure };
+            const k = pkey orelse return error.OpensslFailure;
+            errdefer c.EVP_PKEY_free(k);
+            try assertRsaStrength(k);
+            return .{ .pkey = k };
         }
     };
 
@@ -225,6 +250,7 @@ pub const Sig = struct {
         sig: []const u8,
     ) Error!void {
         provider.assertActive();
+        try assertRsaStrength(kp.pkey);
         const mdname = try explicitDigest(digest);
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);
@@ -263,6 +289,14 @@ pub const Sig = struct {
             .ecdsa_p256, .ecdsa_p384, .ecdsa_p521 => {},
             else => return error.Unsupported,
         }
+        if (c.EVP_PKEY_is_a(kp.pkey, "EC") != 1) return error.Unsupported;
+        // group name must match the requested curve; OpenSSL normalises the
+        // stored name to OID short form (e.g. "prime256v1"), so compare
+        // against ecGroupOid rather than the NIST input name.
+        var gname: [32]u8 = undefined;
+        var glen: usize = 0;
+        if (c.EVP_PKEY_get_utf8_string_param(kp.pkey, c.OSSL_PKEY_PARAM_GROUP_NAME, &gname, gname.len, &glen) != 1) return error.Unsupported;
+        if (!std.mem.eql(u8, gname[0..glen], try ecGroupOid(alg))) return error.Unsupported;
         const mdname = try explicitDigest(digest);
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);
@@ -581,4 +615,23 @@ test "fromRsaComponents rejects n slice whose len exceeds c_int (BN_bin2bn guard
     const n_huge: []const u8 = one[0..1].ptr[0..huge]; // len > c_int, never read
     const e_small = [_]u8{ 0x01, 0x00, 0x01 }; // normal 65537 exponent
     try std.testing.expectError(error.OpensslFailure, Sig.KeyPair.fromRsaComponents(n_huge, &e_small));
+}
+
+test "verifyRsa rejects a non-RSA key" {
+    var ec = try Sig.generate(.ecdsa_p256);
+    defer ec.deinit();
+    try std.testing.expectError(error.Unsupported, Sig.verifyRsa(.pkcs1, .sha256, &ec, "x", "y"));
+}
+
+test "fromRsaComponents rejects an undersized (1024-bit) modulus" {
+    // 1024-bit modulus (128 bytes) with exponent 65537 — must be rejected.
+    const n = [_]u8{0xC0} ++ [_]u8{0xFF} ** 126 ++ [_]u8{0x01}; // 128 bytes, high bit set
+    const e = [_]u8{ 0x01, 0x00, 0x01 };
+    try std.testing.expectError(error.Unsupported, Sig.KeyPair.fromRsaComponents(&n, &e));
+}
+
+test "verifyEcdsa rejects a curve/alg mismatch" {
+    var p256 = try Sig.generate(.ecdsa_p256);
+    defer p256.deinit();
+    try std.testing.expectError(error.Unsupported, Sig.verifyEcdsa(.ecdsa_p384, .sha384, &p256, "x", "y"));
 }

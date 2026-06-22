@@ -39,7 +39,23 @@ pub fn linkOpenssl(b: *std.Build, m: *std.Build.Module, openssl_path: ?[]const u
         m.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
         m.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
     }
-    m.linkSystemLibrary("ssl", .{});
-    m.linkSystemLibrary("crypto", .{});
+    // FIPS-140-3 requires the CERTIFIED SHARED OpenSSL build — libcrypto/
+    // libssl plus their dynamically-loaded `fips.so` provider — to be the
+    // crypto actually used. Force DYNAMIC linking with NO static fallback
+    // (`search_strategy = .no_fallback`): Zig's default `.paths_first` would
+    // happily link `libcrypto.a` when the FIPS `enable-fips` build installs
+    // both `.so` and `.a`, embedding a static libcrypto that can diverge from
+    // the dynamically-loaded `fips.so` module and void the validation. With
+    // forced dynamic linking the binary carries a DT_NEEDED on libcrypto.so/
+    // libssl.so, and the prefix RPATH added above makes the certified shared
+    // libraries (and their fips.so) the ones resolved at runtime. The build
+    // fails loudly if only a static OpenSSL is present — the correct posture
+    // for a FIPS build, never a silent static embed.
+    const dynamic_fips: std.Build.Module.LinkSystemLibraryOptions = .{
+        .preferred_link_mode = .dynamic,
+        .search_strategy = .no_fallback,
+    };
+    m.linkSystemLibrary("ssl", dynamic_fips);
+    m.linkSystemLibrary("crypto", dynamic_fips);
     m.link_libc = true;
 }

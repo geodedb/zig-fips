@@ -13,6 +13,11 @@
 const std = @import("std");
 
 pub const Hash = enum { sha256, sha384, sha512, sha3_256, sha3_384, sha3_512 };
+// `Mac`, `Kdf`, and `kdfName` (below) enumerate the FIPS-approved MAC/KDF
+// taxonomy for spec completeness in this copy-verbatim canonical file. The
+// seam wrappers (`Mac.hmac`, `Kdf.hkdf`/`pbkdf2`) select the digest via
+// `policy.Hash`, so these decls are intentionally not referenced by the
+// wrappers; they mirror the approved-algorithm table for consumers/tooling.
 pub const Mac = enum { hmac_sha256, hmac_sha384, hmac_sha512 };
 pub const Kdf = enum { hkdf, pbkdf2 };
 pub const Aead = enum { aes_128_gcm, aes_256_gcm };

@@ -3,10 +3,10 @@
 
 //! Stress tests for fips.
 //!
-//! Runs via `zig build test-stress`. The crypto wrappers are exercised
-//! for correctness by KATs in the unit suite; this file holds a light
-//! module-surface stress placeholder so the stress step stays green
-//! without requiring an OpenSSL link.
+//! Runs via `zig build test-stress` (OpenSSL-linked; see build.zig). Drives
+//! the crypto wrappers under load: 50k AES-256-GCM seal/open round-trips plus
+//! an 8-thread concurrent-hash storm that exercises the lock-free provider
+//! init + fetch cache (TSan-clean under `-Dtsan`).
 
 const std = @import("std");
 const lib = @import("fips");

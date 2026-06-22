@@ -292,10 +292,11 @@ pub fn build(b: *std.Build) void {
     // own module so any bench source — including files in subdirectories
     // like benchmarks/micro/ — can `@import("framework")` it. Each suite
     // is then a standalone exe whose root module imports both the
-    // framework and the project library. ReleaseFast is forced for all
-    // benchmark exes so casual `zig build bench` invocations still
-    // produce comparable numbers regardless of the top-level optimize
-    // option.
+    // framework and the project library. The framework module and each
+    // bench exe's root module are built ReleaseFast; NOTE the imported `fips`
+    // library module follows the top-level `-Doptimize` (Debug by default),
+    // so for production-representative numbers run
+    // `zig build bench -Doptimize=ReleaseFast`.
     // ------------------------------------------------------------------
 
     const framework_module = b.addModule("framework", .{

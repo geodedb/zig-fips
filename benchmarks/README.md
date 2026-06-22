@@ -10,7 +10,7 @@ applies.
 | File | Purpose |
 | --- | --- |
 | `framework.zig` | Iteration loop, statistics, JSON emit, RSS + alloc tracking. No dependency on the project library. |
-| `bench.zig` | Default suite invoked by `zig build bench`. Replace the placeholder scenarios with real workloads. |
+| `bench.zig` | Default suite invoked by `zig build bench`. Real workloads: SHA-256, HMAC-SHA256, HKDF, AES-256-GCM (64 B + 1350 B seal/open), Ed25519/ECDSA-P256 sign+verify, ML-KEM-768 encap/decap, CSPRNG. For production-representative numbers run with `-Doptimize=ReleaseFast` (the bench exe is ReleaseFast, but the imported `fips` library module follows the top-level optimize mode). |
 | `scale.zig` | Larger / longer-running grid invoked by `zig build scale-bench`. Gated to schedule/manual in CI. |
 | `compare.zig` | Diffs two result documents and exits non-zero on regression. Used by `zig build compare-bench` and the CI gate. |
 | `micro/` | One file per narrowly-scoped micro-benchmark. Each is a standalone exe wired in `build.zig`. |

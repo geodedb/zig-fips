@@ -12,8 +12,7 @@ pub const Kdf = struct {
     /// RFC 5869 extract-then-expand. `salt` may be empty.
     pub fn hkdf(hash: policy.Hash, ikm: []const u8, salt: []const u8, info: []const u8, out: []u8) Error!void {
         provider.assertActive();
-        const kdf = c.EVP_KDF_fetch(provider.libCtx(), "HKDF", "fips=yes") orelse return error.OpensslFailure;
-        defer c.EVP_KDF_free(kdf);
+        const kdf = provider.kdfHkdf() orelse return error.OpensslFailure;
         const ctx = c.EVP_KDF_CTX_new(kdf) orelse return error.OpensslFailure;
         defer c.EVP_KDF_CTX_free(ctx);
         var mode: c_int = c.EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND;
@@ -34,8 +33,7 @@ pub const Kdf = struct {
     /// EVP_KDF "HKDF" with OSSL_KDF_PARAM_MODE = "EXPAND_ONLY".
     pub fn hkdfExpand(hash: policy.Hash, prk: []const u8, info: []const u8, out: []u8) Error!void {
         provider.assertActive();
-        const kdf = c.EVP_KDF_fetch(provider.libCtx(), "HKDF", "fips=yes") orelse return error.OpensslFailure;
-        defer c.EVP_KDF_free(kdf);
+        const kdf = provider.kdfHkdf() orelse return error.OpensslFailure;
         const ctx = c.EVP_KDF_CTX_new(kdf) orelse return error.OpensslFailure;
         defer c.EVP_KDF_CTX_free(ctx);
         var mode: c_int = c.EVP_KDF_HKDF_MODE_EXPAND_ONLY;
@@ -62,8 +60,7 @@ pub const Kdf = struct {
     /// known-answer tests, which use c=1 / short salts by design.
     fn pbkdf2Derive(hash: policy.Hash, password: []const u8, salt: []const u8, iters: u32, out: []u8, relax: bool) Error!void {
         provider.assertActive();
-        const kdf = c.EVP_KDF_fetch(provider.libCtx(), "PBKDF2", "fips=yes") orelse return error.OpensslFailure;
-        defer c.EVP_KDF_free(kdf);
+        const kdf = provider.kdfPbkdf2() orelse return error.OpensslFailure;
         const ctx = c.EVP_KDF_CTX_new(kdf) orelse return error.OpensslFailure;
         defer c.EVP_KDF_CTX_free(ctx);
         var iter: c_int = @intCast(iters);

@@ -12,10 +12,10 @@ const policy = @import("policy.zig");
 var g_ctx: ?*c.OSSL_LIB_CTX = null;
 var g_fips: ?*c.OSSL_PROVIDER = null;
 // g_ready is the lock-free readiness flag for the double-checked lock pattern.
-// The release-store happens-after all g_ctx/g_fips/g_ciphers/g_mds/g_hmac writes;
-// any thread that observes g_ready==true via an acquire-load is guaranteed to
-// see those writes. The lock is acquired only until init completes once per
-// process lifetime.
+// The release-store happens-after all g_ctx/g_fips/g_ciphers/g_mds/g_hmac/
+// g_kdf_hkdf/g_kdf_pbkdf2 writes; any thread that observes g_ready==true via
+// an acquire-load is guaranteed to see those writes. The lock is acquired only
+// until init completes once per process lifetime.
 var g_ready = std.atomic.Value(bool).init(false);
 var g_mu: std.atomic.Mutex = .unlocked;
 
@@ -35,6 +35,10 @@ var g_ciphers: [aead_count]?*c.EVP_CIPHER = [_]?*c.EVP_CIPHER{null} ** aead_coun
 var g_mds: [hash_count]?*c.EVP_MD = [_]?*c.EVP_MD{null} ** hash_count;
 /// Cached HMAC EVP_MAC* (fips=yes, process-lifetime).
 var g_hmac: ?*c.EVP_MAC = null;
+/// Cached EVP_KDF* for HKDF (fips=yes, process-lifetime).
+var g_kdf_hkdf: ?*c.EVP_KDF = null;
+/// Cached EVP_KDF* for PBKDF2 (fips=yes, process-lifetime).
+var g_kdf_pbkdf2: ?*c.EVP_KDF = null;
 
 /// Spin-acquire g_mu, parking via Thread.yield while contended.
 fn muLock() void {
@@ -99,6 +103,8 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
             return error.FipsProviderUnavailable;
     }
     g_hmac = c.EVP_MAC_fetch(ctx, "HMAC", "fips=yes") orelse return error.FipsProviderUnavailable;
+    g_kdf_hkdf = c.EVP_KDF_fetch(ctx, "HKDF", "fips=yes") orelse return error.FipsProviderUnavailable;
+    g_kdf_pbkdf2 = c.EVP_KDF_fetch(ctx, "PBKDF2", "fips=yes") orelse return error.FipsProviderUnavailable;
     g_ready.store(true, .release); // publish: ctx + fips + caches fully initialized
 }
 
@@ -128,6 +134,16 @@ pub fn mdFor(alg: policy.Hash) ?*c.EVP_MD {
 /// Return the cached fips=yes HMAC EVP_MAC.
 pub fn hmacMac() ?*c.EVP_MAC {
     return g_hmac;
+}
+
+/// Return the cached fips=yes EVP_KDF for HKDF.
+pub fn kdfHkdf() ?*c.EVP_KDF {
+    return g_kdf_hkdf;
+}
+
+/// Return the cached fips=yes EVP_KDF for PBKDF2.
+pub fn kdfPbkdf2() ?*c.EVP_KDF {
+    return g_kdf_pbkdf2;
 }
 
 /// Hard-fail startup assertion. Panics if the validated FIPS provider

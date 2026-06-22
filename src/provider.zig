@@ -10,6 +10,11 @@ const c = ffi.c;
 
 var g_ctx: ?*c.OSSL_LIB_CTX = null;
 var g_fips: ?*c.OSSL_PROVIDER = null;
+// g_ready is the lock-free readiness flag for the double-checked lock pattern.
+// The release-store happens-after all g_ctx/g_fips writes; any thread that
+// observes g_ready==true via an acquire-load is guaranteed to see those writes.
+// The lock is acquired only until init completes once per process lifetime.
+var g_ready = std.atomic.Value(bool).init(false);
 var g_mu: std.atomic.Mutex = .unlocked;
 
 /// Spin-acquire g_mu, parking via Thread.yield while contended.
@@ -20,19 +25,20 @@ fn muLock() void {
 /// Returns the process-global lib context with `fips=yes` as the
 /// default property query. Loads the fips + base providers on first use.
 pub fn libCtx() *c.OSSL_LIB_CTX {
+    // Fast path: g_ctx is immutable after init; the acquire-load
+    // synchronizes-with ensureFips()'s release-store so g_ctx is visible.
+    if (g_ready.load(.acquire)) return g_ctx.?;
     muLock();
     defer g_mu.unlock();
-    if (g_ctx) |ctx| return ctx;
-    const ctx = c.OSSL_LIB_CTX_new() orelse @panic("OSSL_LIB_CTX_new failed");
-    g_ctx = ctx;
-    return ctx;
+    return ctxLocked();
 }
 
 /// Load the FIPS provider and force fips-only algorithm selection.
 pub fn ensureFips() error{FipsProviderUnavailable}!void {
+    if (g_ready.load(.acquire)) return; // fast path: fully initialized, no lock
     muLock();
     defer g_mu.unlock();
-    if (g_fips != null) return;
+    if (g_fips != null) return; // another thread initialized while we waited
     // libCtx() also takes g_mu — call the unlocked core to avoid deadlock.
     const ctx = ctxLocked();
     // The FIPS provider self-test needs the install config data
@@ -51,6 +57,7 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
     // Self-test: provider must report available (runs KATs on load).
     if (c.OSSL_PROVIDER_self_test(fips) != 1) return error.FipsProviderUnavailable;
     g_fips = fips;
+    g_ready.store(true, .release); // publish: ctx + fips fully initialized
 }
 
 /// Caller MUST hold g_mu. Lazy-creates the lib context.

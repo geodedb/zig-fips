@@ -34,6 +34,13 @@ fn ecGroup(alg: policy.SigAlg) [:0]const u8 {
     };
 }
 
+/// Guard usize→c_int narrowing: returns error.OpensslFailure when `len`
+/// exceeds c_int max, preventing silent truncation/UB in ReleaseFast.
+fn toCInt(len: usize) Sig.Error!c_int {
+    if (len > std.math.maxInt(c_int)) return error.OpensslFailure;
+    return @intCast(len);
+}
+
 /// Digest name used for classical (non-PQC) sign/verify. Ed25519 and the
 /// PQC algorithms are one-shot pure modes (no pre-hash).
 fn sigDigest(alg: policy.SigAlg) ?[:0]const u8 {
@@ -83,7 +90,7 @@ pub const Sig = struct {
                 .pqc => c.EVP_PKEY_new_raw_public_key_ex(provider.libCtx(), policy.sigName(alg), "fips=yes", raw.ptr, raw.len),
                 .der => blk: { // ECDSA / RSA: decode SubjectPublicKeyInfo DER.
                     var pp: [*c]const u8 = raw.ptr;
-                    break :blk c.d2i_PUBKEY(null, &pp, @intCast(raw.len));
+                    break :blk c.d2i_PUBKEY(null, &pp, try toCInt(raw.len));
                 },
             } orelse return error.OpensslFailure;
             return .{ .pkey = pkey };
@@ -97,7 +104,7 @@ pub const Sig = struct {
                 .der => blk: { // ECDSA / RSA: decode type-specific DER.
                     var pp: [*c]const u8 = raw.ptr;
                     const t: c_int = if (sigIsRsa(alg)) c.EVP_PKEY_RSA else c.EVP_PKEY_EC;
-                    break :blk c.d2i_PrivateKey(t, null, &pp, @intCast(raw.len));
+                    break :blk c.d2i_PrivateKey(t, null, &pp, try toCInt(raw.len));
                 },
             } orelse return error.OpensslFailure;
             return .{ .pkey = pkey };
@@ -110,7 +117,7 @@ pub const Sig = struct {
         pub fn fromRsaSpki(der: []const u8) Error!KeyPair {
             provider.assertActive();
             var pp: [*c]const u8 = der.ptr;
-            const pkey = c.d2i_PUBKEY(null, &pp, @intCast(der.len)) orelse return error.OpensslFailure;
+            const pkey = c.d2i_PUBKEY(null, &pp, try toCInt(der.len)) orelse return error.OpensslFailure;
             return .{ .pkey = pkey };
         }
 
@@ -125,9 +132,9 @@ pub const Sig = struct {
             // parses big-endian into a BIGNUM; OSSL_PARAM_BLD_push_BN then
             // serializes it into the native param representation OpenSSL's
             // RSA keymgmt expects, so we never hand-roll endianness here.
-            const bn_n = c.BN_bin2bn(n.ptr, @intCast(n.len), null) orelse return error.OpensslFailure;
+            const bn_n = c.BN_bin2bn(n.ptr, try toCInt(n.len), null) orelse return error.OpensslFailure;
             defer c.BN_free(bn_n);
-            const bn_e = c.BN_bin2bn(e.ptr, @intCast(e.len), null) orelse return error.OpensslFailure;
+            const bn_e = c.BN_bin2bn(e.ptr, try toCInt(e.len), null) orelse return error.OpensslFailure;
             defer c.BN_free(bn_e);
 
             const bld = c.OSSL_PARAM_BLD_new() orelse return error.OpensslFailure;

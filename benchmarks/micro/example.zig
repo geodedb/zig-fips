@@ -13,6 +13,8 @@ const Io = std.Io;
 const lib = @import("fips");
 const framework = @import("framework");
 
+const msg_64: [64]u8 = [_]u8{0xab} ** 64;
+
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
@@ -24,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
 
     const scenarios = [_]framework.Scenario{
         .{
-            .name = "init_default_x100k",
+            .name = "sha256_64B_x100k",
             .ops_per_iteration = 100_000,
             .warmup_iterations = 2,
             .sample_iterations = 6,
@@ -40,8 +42,10 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn run(ctx: *framework.Context) anyerror!void {
+    var out: [32]u8 = undefined;
     var i: u64 = 0;
     while (i < ctx.scenario.ops_per_iteration) : (i += 1) {
-        std.mem.doNotOptimizeAway(lib.version.len);
+        const n = try lib.Hash.digest(.sha256, &msg_64, &out);
+        std.mem.doNotOptimizeAway(out[0..n]);
     }
 }

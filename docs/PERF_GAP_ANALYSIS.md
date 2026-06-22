@@ -137,3 +137,9 @@ Deferred 2 · Not-a-defect 1.
 | PERF-0012 | Bench-imported `fips` lib follows top-level optimize (Debug) under bare `zig build bench` | Resolved-by-doc | `07ccfa1` |
 
 PERF-0001 update: the fetch cache now also covers HKDF + PBKDF2 (`g_kdf_hkdf`/`g_kdf_pbkdf2`, commit `8b859a1`), so all AEAD/Hash/HMAC/KDF one-shot ops skip the per-call provider lookup.
+
+## Round-3 re-review follow-up (2026-06-22)
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| PERF-0013 | `assertRsaStrength` BIGNUM exponent check ran per verify (construction-time check) | Closed | `c8e260b` |

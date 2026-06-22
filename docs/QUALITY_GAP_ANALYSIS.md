@@ -251,3 +251,10 @@ Open-minor 4 (QUAL-0003 partially, QUAL-0004, QUAL-0009, QUAL-0012).
 | QUAL-0021 | `benchmarks/README.md` still said "replace the placeholder scenarios" | Closed | `07ccfa1` |
 | QUAL-0022 | Docs cited a non-existent `tests/provider.zig` for the concurrency test | Closed | docs |
 | QUAL-0023 | Dead `policy.Mac`/`policy.Kdf`/`kdfName` annotated as spec-completeness scaffolding | Closed | `07ccfa1` |
+
+## Round-3 re-review follow-ups (2026-06-22)
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| N-R3-03 | CHANGELOG `Hash.Stream` up-ref note omitted `init` | Closed | `94309f6` |
+| PERF-0013 | RSA exponent check moved off the verify hot path (full validation stays at import) | Closed | `c8e260b` |

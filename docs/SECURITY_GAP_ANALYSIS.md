@@ -219,3 +219,11 @@ Findings surfaced by the post-hardening re-audit, now closed:
 | SEC-2001 | `ensureFips` partial-init fail-open (in-lock recheck keyed on `g_fips`, not `g_ready`) | Closed | `5325d0f` |
 | SEC-2002 | CI `fips-deps` skipped GPG: SHA-256-only is same-origin integrity, not authenticity | Closed | `5395288` |
 | SEC-2003 | RSA exponent not FIPS-validated (`e=1`/even `e` accepted on import -> forgery vector) | Closed | `f55d176` |
+
+## Round-3 re-review follow-ups (2026-06-22)
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| N-R3-01 | Cache-handle leak on partial-init retry (slots re-fetched + overwritten) | Closed | `28a18a0` |
+| N-R3-02 | `OSSL_LIB_CTX_load_config` ran on every retry (idempotency unproven) | Closed | `28a18a0` |
+| N-R3-04 | CI installed gnupg but did not require it (`.asc` failure -> silent SHA-256-only) | Closed | `94309f6` |

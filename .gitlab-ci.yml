@@ -307,7 +307,7 @@ fips-deps:
   extends: .zig-host-base
   stage: build
   script:
-  - apt-get install -y --no-install-recommends perl wget
+  - apt-get install -y --no-install-recommends perl wget gnupg
   - make deps
   artifacts:
     paths:

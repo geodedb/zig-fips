@@ -157,6 +157,23 @@ if command -v gpg >/dev/null 2>&1; then
     fi
   else
     log "WARNING: could not download ${TARBALL}.asc — GPG check skipped"
+    if [ "${REQUIRE_GPG:-}" = "1" ]; then
+      log "ERROR: REQUIRE_GPG=1 is set — refusing to continue without GPG authenticity check"
+      exit 1
+    fi
+  fi
+else
+  # gpg binary is absent: SHA-256 still guards integrity, but AUTHENTICITY
+  # (binding the tarball to the OpenSSL project's signing key) has NOT been
+  # verified.  An attacker who can serve a MITM SHA-256 file alongside a
+  # crafted tarball would pass this check.
+  printf '\033[0;31m!!!\033[0m \033[1;33mWARNING: gpg not found — AUTHENTICITY NOT VERIFIED.\033[0m\n'
+  printf '\033[0;31m!!!\033[0m \033[1;33m         SHA-256 guards integrity only; the tarball has NOT been\033[0m\n'
+  printf '\033[0;31m!!!\033[0m \033[1;33m         authenticated against the OpenSSL release signing key.\033[0m\n'
+  printf '\033[0;31m!!!\033[0m \033[1;33m         Install gnupg (apt-get install -y gnupg) to enable full verification.\033[0m\n'
+  if [ "${REQUIRE_GPG:-}" = "1" ]; then
+    log "ERROR: REQUIRE_GPG=1 is set — refusing to continue without GPG authenticity check"
+    exit 1
   fi
 fi
 

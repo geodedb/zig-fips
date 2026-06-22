@@ -35,8 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Hash.digest` one-shot SHA-2 (256/384/512) and SHA-3 (256/384/512)
 - `Hash.Stream` incremental hashing API: `init`, `update` (`Error!void`),
-  `clone`, `final`; `update` is fallible to propagate OpenSSL errors; MD
-  object up-ref'd on `clone`
+  `clone`, `final`; `update` is fallible to propagate OpenSSL errors; the
+  cached MD is up-ref'd on `init` and `clone` and released by `deinit`
 - `Hash.digest` and `Hash.Stream.final` bounds-check the output buffer
 - `Mac.hmac` HMAC over any approved SHA-2/3 digest
 - `Kdf.hkdf` (SP 800-56C extract+expand), `Kdf.hkdfExpand` (expand-only)

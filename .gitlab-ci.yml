@@ -306,6 +306,11 @@ scale-bench:
 fips-deps:
   extends: .zig-host-base
   stage: build
+  # gnupg is installed above so the OpenSSL release GPG signature is checked;
+  # REQUIRE_GPG=1 makes that authenticity check mandatory (fail closed if the
+  # signature/key cannot be verified, e.g. a transient .asc fetch failure).
+  variables:
+    REQUIRE_GPG: "1"
   script:
   - apt-get install -y --no-install-recommends perl wget gnupg
   - make deps

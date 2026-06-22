@@ -14,6 +14,8 @@ pub const Hash = struct {
         provider.assertActive();
         const md = c.EVP_MD_fetch(provider.libCtx(), policy.hashName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_MD_free(md);
+        const md_size = c.EVP_MD_get_size(md);
+        if (md_size <= 0 or out.len < @as(usize, @intCast(md_size))) return error.OpensslFailure;
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);
         if (c.EVP_DigestInit_ex2(ctx, md, null) != 1) return error.OpensslFailure;
@@ -61,6 +63,8 @@ pub const Hash = struct {
         /// Finalise into `out` and return the digest length. Does not
         /// reset the context. `out` must be at least the digest size.
         pub fn final(self: *Stream, out: []u8) Error!usize {
+            const md_size = c.EVP_MD_get_size(self.md);
+            if (md_size <= 0 or out.len < @as(usize, @intCast(md_size))) return error.OpensslFailure;
             var n: c_uint = 0;
             if (c.EVP_DigestFinal_ex(self.ctx, out.ptr, &n) != 1) return error.OpensslFailure;
             return n;
@@ -188,11 +192,6 @@ test "Stream supports SHA-3 (incremental == one-shot SHA3-256)" {
 }
 
 test "Hash.digest with correctly-sized buffer succeeds (no overrun path)" {
-    // The production digest() passes out.ptr directly to EVP_DigestFinal_ex
-    // without an out.len guard. Passing a too-small buffer would cause UB, not
-    // error.OpensslFailure, so the negative guard belongs in a future wave's
-    // production fix (Task 1 hardening). This test exercises the happy path
-    // with exact-sized buffers to serve as a regression anchor.
     var out32: [32]u8 = undefined;
     const n = try Hash.digest(.sha256, "probe", &out32);
     try std.testing.expectEqual(@as(usize, 32), n);
@@ -202,4 +201,17 @@ test "Hash.digest with correctly-sized buffer succeeds (no overrun path)" {
     var out64: [64]u8 = undefined;
     const n64 = try Hash.digest(.sha512, "probe", &out64);
     try std.testing.expectEqual(@as(usize, 64), n64);
+}
+
+test "Hash.digest rejects an undersized output buffer" {
+    var small: [16]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Hash.digest(.sha256, "abc", &small));
+}
+
+test "Hash.Stream.final rejects an undersized output buffer" {
+    var s = try Hash.Stream.init(.sha256);
+    defer s.deinit();
+    try s.update("abc");
+    var small: [16]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, s.final(&small));
 }

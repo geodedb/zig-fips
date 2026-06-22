@@ -19,10 +19,10 @@ test "shim Stream chunked update equals one-shot SHA2-256 (same KAT as fips back
 
     var s = try shim.Hash.Stream.init(.sha256);
     defer s.deinit();
-    s.update(msg[0..1]);
-    s.update(msg[1..10]);
-    s.update(msg[10..40]);
-    s.update(msg[40..]);
+    try s.update(msg[0..1]);
+    try s.update(msg[1..10]);
+    try s.update(msg[10..40]);
+    try s.update(msg[40..]);
     var streamed: [32]u8 = undefined;
     const n2 = try s.final(&streamed);
 
@@ -37,8 +37,8 @@ test "shim Stream chunked update equals one-shot SHA2-256 (same KAT as fips back
 test "shim Stream clone finalizes identically to its source (SHA2-384)" {
     var s = try shim.Hash.Stream.init(.sha384);
     defer s.deinit();
-    s.update("hello, ");
-    s.update("world");
+    try s.update("hello, ");
+    try s.update("world");
 
     var clone = try s.clone();
     defer clone.deinit();
@@ -53,13 +53,13 @@ test "shim Stream clone finalizes identically to its source (SHA2-384)" {
 test "shim Stream clone diverges after independent updates (SHA2-512)" {
     var s = try shim.Hash.Stream.init(.sha512);
     defer s.deinit();
-    s.update("common-prefix");
+    try s.update("common-prefix");
 
     var clone = try s.clone();
     defer clone.deinit();
 
-    s.update("-A");
-    clone.update("-B");
+    try s.update("-A");
+    try clone.update("-B");
 
     var a: [64]u8 = undefined;
     var b: [64]u8 = undefined;
@@ -78,8 +78,8 @@ test "shim Stream supports SHA-3 (incremental == one-shot SHA3-256)" {
     const msg = "the quick brown fox";
     var s = try shim.Hash.Stream.init(.sha3_256);
     defer s.deinit();
-    s.update(msg[0..4]);
-    s.update(msg[4..]);
+    try s.update(msg[0..4]);
+    try s.update(msg[4..]);
     var streamed: [32]u8 = undefined;
     const n = try s.final(&streamed);
     var oneshot: [32]u8 = undefined;

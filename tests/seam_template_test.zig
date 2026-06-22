@@ -17,8 +17,8 @@ test "seam selects std_shim when fips=false and exposes the API" {
     // Streaming hash routes through the seam and equals one-shot.
     var s = try backend.HashStream.init(.sha256);
     defer s.deinit();
-    s.update("a");
-    s.update("bc");
+    try s.update("a");
+    try s.update("bc");
     var streamed: [32]u8 = undefined;
     const n = try s.final(&streamed);
     try std.testing.expectEqualSlices(u8, out[0..n], streamed[0..n]);

@@ -50,13 +50,12 @@ pub const Hash = struct {
             return .{ .md = md, .ctx = ctx };
         }
 
-        /// Absorb `bytes` into the running digest. Infallible at the API
-        /// level (matches the shim): an OpenSSL update failure on a
-        /// correctly-initialised context cannot happen for a software
-        /// digest, so it panics rather than poisoning the type with an
-        /// error on the hot path.
-        pub fn update(self: *Stream, bytes: []const u8) void {
-            if (c.EVP_DigestUpdate(self.ctx, bytes.ptr, bytes.len) != 1) @panic("EVP_DigestUpdate failed");
+        /// Absorb `bytes` into the running digest. Returns error.OpensslFailure
+        /// if the provider update fails (e.g. provider error under memory
+        /// pressure) — a network-facing transcript must fail the connection,
+        /// not the process.
+        pub fn update(self: *Stream, bytes: []const u8) Error!void {
+            if (c.EVP_DigestUpdate(self.ctx, bytes.ptr, bytes.len) != 1) return error.OpensslFailure;
         }
 
         /// Finalise into `out` and return the digest length. Does not
@@ -71,12 +70,10 @@ pub const Hash = struct {
         /// clone and the original share no mutable state: updating one
         /// does not affect the other.
         pub fn clone(self: *Stream) Error!Stream {
-            // Keep an independent EVP_MD reference for the clone so each
-            // Stream can EVP_MD_free on deinit without a use-after-free.
-            const md = c.EVP_MD_fetch(provider.libCtx(), c.EVP_MD_get0_name(self.md), "fips=yes") orelse return error.Unsupported;
-            errdefer c.EVP_MD_free(md);
+            if (c.EVP_MD_up_ref(self.md) != 1) return error.OpensslFailure;
+            errdefer c.EVP_MD_free(self.md);
             const ctx = c.EVP_MD_CTX_dup(self.ctx) orelse return error.OpensslFailure;
-            return .{ .md = md, .ctx = ctx };
+            return .{ .md = self.md, .ctx = ctx };
         }
 
         /// Release the OpenSSL context and digest reference.
@@ -116,10 +113,10 @@ test "Stream chunked update equals one-shot SHA2-256" {
     var s = try Hash.Stream.init(.sha256);
     defer s.deinit();
     // Feed in irregular chunks; the running digest must equal one-shot.
-    s.update(msg[0..1]);
-    s.update(msg[1..10]);
-    s.update(msg[10..40]);
-    s.update(msg[40..]);
+    try s.update(msg[0..1]);
+    try s.update(msg[1..10]);
+    try s.update(msg[10..40]);
+    try s.update(msg[40..]);
     var streamed: [32]u8 = undefined;
     const n2 = try s.final(&streamed);
 
@@ -136,8 +133,8 @@ test "Stream chunked update equals one-shot SHA2-256" {
 test "Stream clone finalizes identically to its source (SHA2-384)" {
     var s = try Hash.Stream.init(.sha384);
     defer s.deinit();
-    s.update("hello, ");
-    s.update("world");
+    try s.update("hello, ");
+    try s.update("world");
 
     var clone = try s.clone();
     defer clone.deinit();
@@ -153,14 +150,14 @@ test "Stream clone finalizes identically to its source (SHA2-384)" {
 test "Stream clone diverges after independent updates (SHA2-512)" {
     var s = try Hash.Stream.init(.sha512);
     defer s.deinit();
-    s.update("common-prefix");
+    try s.update("common-prefix");
 
     var clone = try s.clone();
     defer clone.deinit();
 
     // Independent suffixes => different digests.
-    s.update("-A");
-    clone.update("-B");
+    try s.update("-A");
+    try clone.update("-B");
 
     var a: [64]u8 = undefined;
     var b: [64]u8 = undefined;
@@ -181,8 +178,8 @@ test "Stream supports SHA-3 (incremental == one-shot SHA3-256)" {
     const msg = "the quick brown fox";
     var s = try Hash.Stream.init(.sha3_256);
     defer s.deinit();
-    s.update(msg[0..4]);
-    s.update(msg[4..]);
+    try s.update(msg[0..4]);
+    try s.update(msg[4..]);
     var streamed: [32]u8 = undefined;
     const n = try s.final(&streamed);
     var oneshot: [32]u8 = undefined;

@@ -14,16 +14,19 @@
 const std = @import("std");
 pub const policy = @import("policy.zig");
 
-fn randomBytes(out: []u8) void {
-    // Non-fips shim CSPRNG: portable OS entropy via std.posix.system,
-    // cross-platform (Linux/macOS/Windows). The FIPS backend uses the
-    // validated DRBG instead (src/csprng.zig).
+fn randomBytes(out: []u8) error{OpensslFailure}!void {
+    // Non-fips shim CSPRNG: OS entropy via the getrandom syscall shim
+    // (std.posix.system), which compiles for Linux/macOS/Windows. The FIPS
+    // backend uses the validated DRBG instead (src/csprng.zig); macOS/Windows
+    // runtime coverage remains the deferred item noted in FIPS_SPECIFICATION.md.
     var off: usize = 0;
     while (off < out.len) {
         const rc = std.posix.system.getrandom(out.ptr + off, out.len - off, 0);
-        const n: isize = @bitCast(rc);
-        if (n < 0) continue; // EINTR/EAGAIN: retry
-        off += @intCast(n);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => off += rc, // rc = bytes filled on success
+            .INTR => continue, // interrupted by a signal; retry
+            else => return error.OpensslFailure, // fatal: fail closed, never loop or fall back
+        }
     }
 }
 
@@ -306,7 +309,7 @@ pub const Sig = struct {
     pub fn generate(alg: policy.SigAlg) Error!KeyPair {
         var seed: [64]u8 = undefined;
         defer secureZero(&seed);
-        randomBytes(&seed);
+        try randomBytes(&seed);
         return switch (alg) {
             .ed25519 => .{ .inner = .{ .ed25519 = Ed25519.KeyPair.generateDeterministic(seed[0..Ed25519.KeyPair.seed_length].*) catch return error.OpensslFailure } },
             .ecdsa_p256 => .{ .inner = .{ .p256 = P256.KeyPair.generateDeterministic(seed[0..P256.KeyPair.seed_length].*) catch return error.OpensslFailure } },
@@ -446,7 +449,7 @@ pub const Kem = struct {
 pub const Csprng = struct {
     pub const Error = error{OpensslFailure};
     pub fn bytes(out: []u8) Error!void {
-        randomBytes(out);
+        try randomBytes(out);
     }
 };
 

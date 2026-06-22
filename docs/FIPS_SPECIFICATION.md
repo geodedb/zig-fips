@@ -195,9 +195,21 @@ local dependency or a non-portable code path.
      `.lazy = true` (each verified with `zig build --fetch`): auth, dns,
      encrypted-fs, fle, fts-storage, grpc-zig, hsm, mcp, oauth, oidc, quic,
      timeseries-storage, tls, uuid, wal, wireguard, zign, zlint.
-   - **`tls` — still pending its own tag.** PQC consumers (quic, wireguard,
-     …) keep their local `.path` `tls` dependency until `tls` is tagged +
-     published, then swap `.tls` to the `git+https` form the same way.
+   - **`tls` — DONE (v0.1.16, 2026-06-22).** `tls` is tagged `v0.1.16`
+     (public), carrying the `-Dfips` seam and pinning the published fips
+     `git+https#v0.1.0`. Published form:
+     `git+https://gitlab.com/devnw/zig/tls.git#v0.1.16` with
+     `.hash = "tls-0.1.16-mtEaLPssFgDXM8r7HPoDgZaqNfrAZbAhTQvk7SDmprqu"`.
+   - **Consumer `.tls` swap — gated on a workspace-wide diamond cascade.**
+     A consumer cannot simply pin `tls@v0.1.16` while still pulling an
+     older `tls` transitively (e.g. quic → otel@v0.1.13 → tls@v0.1.15);
+     the `detect-diamond-deps` gate (GAP-0020 single-version rule) rejects
+     two `tls` hashes in one graph. Resolving it requires cascading
+     `tls@v0.1.16` through every transitive consumer (otel, grpc-zig,
+     metrics, config, … — several still on `feat/fips-pqc`), each a
+     release of its own. Until that cascade runs, PQC consumers such as
+     quic intentionally keep the local `.path` `tls` dep (their build.zig.zon
+     documents this as the diamond-satisfying interim state).
    This is a mechanical, per-repo follow-up; it does not change any
    algorithm or seam behavior.
 

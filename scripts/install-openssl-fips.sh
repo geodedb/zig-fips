@@ -94,8 +94,83 @@ install_prereqs
 
 log "Fetching openssl-${VER}"
 cd "${WORK}"
-wget -q "https://github.com/openssl/openssl/releases/download/openssl-${VER}/openssl-${VER}.tar.gz"
-tar xzf "openssl-${VER}.tar.gz"
+BASE_URL="https://github.com/openssl/openssl/releases/download/openssl-${VER}"
+TARBALL="openssl-${VER}.tar.gz"
+wget -q "${BASE_URL}/${TARBALL}"
+
+# ---------------------------------------------------------------------------
+# INTEGRITY / AUTHENTICITY VERIFICATION — fail closed.
+#
+# OpenSSL release signing keys (from https://www.openssl.org/source/):
+#   Current (3.x/4.x releases):
+#     B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40
+#   Previous (still used for some 3.x series releases):
+#     BA54 73A2 B058 7B07 FB27  CF2D 2160 94DF D0CB 81EF
+# ---------------------------------------------------------------------------
+OPENSSL_RELEASE_KEY_CURRENT="B146647E45A7B33947AB226B2A2C87D161692D40"
+OPENSSL_RELEASE_KEY_PREVIOUS="BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"
+
+SHA256_VERIFIED=no
+GPG_VERIFIED=no
+
+# --- SHA-256 verification ---------------------------------------------------
+if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+  if wget -q "${BASE_URL}/${TARBALL}.sha256" -O "${TARBALL}.sha256"; then
+    # The .sha256 file contains "HASH *filename" with the bare filename; we
+    # rewrite the path to match our working-directory copy so sha256sum/shasum
+    # can verify without a directory mismatch.
+    EXPECTED_HASH="$(awk '{print $1}' "${TARBALL}.sha256")"
+    if command -v sha256sum >/dev/null 2>&1; then
+      printf '%s  %s\n' "${EXPECTED_HASH}" "${TARBALL}" | sha256sum --check --strict
+    else
+      printf '%s  %s\n' "${EXPECTED_HASH}" "${TARBALL}" | shasum -a 256 -c -
+    fi
+    SHA256_VERIFIED=yes
+  else
+    log "WARNING: could not download ${TARBALL}.sha256 — SHA-256 check skipped"
+  fi
+fi
+
+# --- GPG signature verification ---------------------------------------------
+if command -v gpg >/dev/null 2>&1; then
+  if wget -q "${BASE_URL}/${TARBALL}.asc" -O "${TARBALL}.asc"; then
+    # Import pinned OpenSSL release signing keys from the canonical keyserver.
+    # We import both the current and previous keys so that any 3.x release in
+    # the field (some older series use the previous key) can be verified.
+    gpg --batch --keyserver hkps://keys.openpgp.org \
+      --recv-keys "${OPENSSL_RELEASE_KEY_CURRENT}" "${OPENSSL_RELEASE_KEY_PREVIOUS}" 2>/dev/null || true
+    # Require the signature to be from one of the two pinned fingerprints.
+    GPG_SIGNER="$(gpg --verify "${TARBALL}.asc" "${TARBALL}" 2>&1)" || {
+      log "ERROR: GPG signature verification FAILED for ${TARBALL}"
+      exit 1
+    }
+    # Confirm the signing key is one of the two pinned fingerprints.
+    if echo "${GPG_SIGNER}" | grep -qE "${OPENSSL_RELEASE_KEY_CURRENT}|${OPENSSL_RELEASE_KEY_PREVIOUS}"; then
+      GPG_VERIFIED=yes
+    else
+      log "ERROR: GPG signature is valid but was NOT made by a pinned OpenSSL release key"
+      log "       Expected one of:"
+      log "         ${OPENSSL_RELEASE_KEY_CURRENT}"
+      log "         ${OPENSSL_RELEASE_KEY_PREVIOUS}"
+      log "       Got: ${GPG_SIGNER}"
+      exit 1
+    fi
+  else
+    log "WARNING: could not download ${TARBALL}.asc — GPG check skipped"
+  fi
+fi
+
+# --- Fail closed: require at least one verification to have succeeded -------
+if [ "${SHA256_VERIFIED}" = "no" ] && [ "${GPG_VERIFIED}" = "no" ]; then
+  log "ERROR: neither SHA-256 nor GPG verification could be performed for ${TARBALL}"
+  log "       Install sha256sum (or shasum) and/or gpg, or ensure the release"
+  log "       assets (.sha256 / .asc) are reachable over HTTPS."
+  exit 1
+fi
+
+log "Verification passed (sha256=${SHA256_VERIFIED}, gpg=${GPG_VERIFIED}) for ${TARBALL}"
+
+tar xzf "${TARBALL}"
 cd "openssl-${VER}"
 
 log "Configuring with enable-fips (prefix=${PREFIX})"

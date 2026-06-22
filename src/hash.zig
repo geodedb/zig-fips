@@ -12,8 +12,7 @@ pub const Hash = struct {
     /// One-shot digest. Returns bytes written into `out`.
     pub fn digest(alg: policy.Hash, msg: []const u8, out: []u8) Error!usize {
         provider.assertActive();
-        const md = c.EVP_MD_fetch(provider.libCtx(), policy.hashName(alg), "fips=yes") orelse return error.Unsupported;
-        defer c.EVP_MD_free(md);
+        const md = provider.mdFor(alg) orelse return error.Unsupported;
         const md_size = c.EVP_MD_get_size(md);
         if (md_size <= 0 or out.len < @as(usize, @intCast(md_size))) return error.OpensslFailure;
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;

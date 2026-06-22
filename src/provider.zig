@@ -7,15 +7,34 @@
 const std = @import("std");
 const ffi = @import("ffi.zig");
 const c = ffi.c;
+const policy = @import("policy.zig");
 
 var g_ctx: ?*c.OSSL_LIB_CTX = null;
 var g_fips: ?*c.OSSL_PROVIDER = null;
 // g_ready is the lock-free readiness flag for the double-checked lock pattern.
-// The release-store happens-after all g_ctx/g_fips writes; any thread that
-// observes g_ready==true via an acquire-load is guaranteed to see those writes.
-// The lock is acquired only until init completes once per process lifetime.
+// The release-store happens-after all g_ctx/g_fips/g_ciphers/g_mds/g_hmac writes;
+// any thread that observes g_ready==true via an acquire-load is guaranteed to
+// see those writes. The lock is acquired only until init completes once per
+// process lifetime.
 var g_ready = std.atomic.Value(bool).init(false);
 var g_mu: std.atomic.Mutex = .unlocked;
+
+// ---------------------------------------------------------------------------
+// Per-algorithm primitive caches. Populated once under g_mu before g_ready
+// is released; read lock-free thereafter (acquire on g_ready synchronises).
+// Callers must always invoke assertActive()/ensureFips() before touching
+// these — the acquire-load of g_ready guarantees the arrays are visible.
+// ---------------------------------------------------------------------------
+
+const aead_count = @typeInfo(policy.Aead).@"enum".fields.len;
+const hash_count = @typeInfo(policy.Hash).@"enum".fields.len;
+
+/// Cached EVP_CIPHER* for each policy.Aead variant (fips=yes, process-lifetime).
+var g_ciphers: [aead_count]?*c.EVP_CIPHER = [_]?*c.EVP_CIPHER{null} ** aead_count;
+/// Cached EVP_MD* for each policy.Hash variant (fips=yes, process-lifetime).
+var g_mds: [hash_count]?*c.EVP_MD = [_]?*c.EVP_MD{null} ** hash_count;
+/// Cached HMAC EVP_MAC* (fips=yes, process-lifetime).
+var g_hmac: ?*c.EVP_MAC = null;
 
 /// Spin-acquire g_mu, parking via Thread.yield while contended.
 fn muLock() void {
@@ -57,7 +76,21 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
     // Self-test: provider must report available (runs KATs on load).
     if (c.OSSL_PROVIDER_self_test(fips) != 1) return error.FipsProviderUnavailable;
     g_fips = fips;
-    g_ready.store(true, .release); // publish: ctx + fips fully initialized
+    // Populate the caches under the already-held init lock, BEFORE the
+    // release-store.  Every future acquire-load of g_ready happens-after
+    // this, so cache reads need no lock.
+    inline for (@typeInfo(policy.Aead).@"enum".fields, 0..) |_, i| {
+        const alg: policy.Aead = @enumFromInt(i);
+        g_ciphers[i] = c.EVP_CIPHER_fetch(ctx, policy.aeadName(alg), "fips=yes") orelse
+            return error.FipsProviderUnavailable;
+    }
+    inline for (@typeInfo(policy.Hash).@"enum".fields, 0..) |_, i| {
+        const alg: policy.Hash = @enumFromInt(i);
+        g_mds[i] = c.EVP_MD_fetch(ctx, policy.hashName(alg), "fips=yes") orelse
+            return error.FipsProviderUnavailable;
+    }
+    g_hmac = c.EVP_MAC_fetch(ctx, "HMAC", "fips=yes") orelse return error.FipsProviderUnavailable;
+    g_ready.store(true, .release); // publish: ctx + fips + caches fully initialized
 }
 
 /// Caller MUST hold g_mu. Lazy-creates the lib context.
@@ -66,6 +99,26 @@ fn ctxLocked() *c.OSSL_LIB_CTX {
     const ctx = c.OSSL_LIB_CTX_new() orelse @panic("OSSL_LIB_CTX_new failed");
     g_ctx = ctx;
     return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// Lock-free primitive accessors — callers must have already called
+// assertActive() so the acquire-load has run and the caches are visible.
+// ---------------------------------------------------------------------------
+
+/// Return the cached fips=yes EVP_CIPHER for the given Aead algorithm.
+pub fn cipherFor(alg: policy.Aead) ?*c.EVP_CIPHER {
+    return g_ciphers[@intFromEnum(alg)];
+}
+
+/// Return the cached fips=yes EVP_MD for the given Hash algorithm.
+pub fn mdFor(alg: policy.Hash) ?*c.EVP_MD {
+    return g_mds[@intFromEnum(alg)];
+}
+
+/// Return the cached fips=yes HMAC EVP_MAC.
+pub fn hmacMac() ?*c.EVP_MAC {
+    return g_hmac;
 }
 
 /// Hard-fail startup assertion. Panics if the validated FIPS provider

@@ -13,8 +13,7 @@ pub const Mac = struct {
     /// `alg`. Returns bytes written into `out`.
     pub fn hmac(alg: policy.Hash, key: []const u8, msg: []const u8, out: []u8) Error!usize {
         provider.assertActive();
-        const mac = c.EVP_MAC_fetch(provider.libCtx(), "HMAC", "fips=yes") orelse return error.OpensslFailure;
-        defer c.EVP_MAC_free(mac);
+        const mac = provider.hmacMac() orelse return error.OpensslFailure;
         const ctx = c.EVP_MAC_CTX_new(mac) orelse return error.OpensslFailure;
         defer c.EVP_MAC_CTX_free(ctx);
 

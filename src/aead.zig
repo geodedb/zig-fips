@@ -38,8 +38,7 @@ pub const Aead = struct {
             tag.len != gcm_tag_len or ciphertext.len < plaintext.len or
             ad.len > std.math.maxInt(c_int) or plaintext.len > std.math.maxInt(c_int))
             return error.OpensslFailure;
-        const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
-        defer c.EVP_CIPHER_free(cipher);
+        const cipher = provider.cipherFor(alg) orelse return error.Unsupported;
         const ctx = c.EVP_CIPHER_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_CIPHER_CTX_free(ctx);
 
@@ -78,8 +77,7 @@ pub const Aead = struct {
             tag.len != gcm_tag_len or plaintext.len < ciphertext.len or
             ad.len > std.math.maxInt(c_int) or ciphertext.len > std.math.maxInt(c_int))
             return error.OpensslFailure;
-        const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
-        defer c.EVP_CIPHER_free(cipher);
+        const cipher = provider.cipherFor(alg) orelse return error.Unsupported;
         const ctx = c.EVP_CIPHER_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_CIPHER_CTX_free(ctx);
 

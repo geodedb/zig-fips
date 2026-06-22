@@ -22,6 +22,20 @@ pub const c = @cImport({
 
 const std = @import("std");
 
+/// Guard usize→c_int narrowing: returns error.OpensslFailure when `len`
+/// exceeds c_int max, preventing silent truncation/UB in ReleaseFast.
+pub fn toCInt(len: usize) error{OpensslFailure}!c_int {
+    if (len > std.math.maxInt(c_int)) return error.OpensslFailure;
+    return @intCast(len);
+}
+
+/// Guard usize→c_long narrowing: returns error.OpensslFailure when `len`
+/// exceeds c_long max, preventing silent truncation/UB in ReleaseFast.
+pub fn toCLong(len: usize) error{OpensslFailure}!c_long {
+    if (len > std.math.maxInt(c_long)) return error.OpensslFailure;
+    return @intCast(len);
+}
+
 test "openssl version is 3.x and >= 3.5 (PQC) and EVP symbols resolve" {
     // OPENSSL_VERSION_NUMBER major nibble == 3.
     try std.testing.expect((c.OPENSSL_VERSION_NUMBER >> 28) == 3);

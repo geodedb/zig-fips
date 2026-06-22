@@ -206,14 +206,19 @@ pub const Aead = struct {
         }
     }
     fn sl(comptime A: type, key: []const u8, nonce: []const u8, ad: []const u8, pt: []const u8, ct: []u8, tag: []u8) Error!void {
-        if (key.len != A.key_length or nonce.len != A.nonce_length or tag.len != A.tag_length or ct.len < pt.len) return error.OpensslFailure;
+        if (key.len != A.key_length or nonce.len != A.nonce_length or tag.len != A.tag_length or ct.len < pt.len or
+            pt.len > std.math.maxInt(c_int) or ad.len > std.math.maxInt(c_int)) return error.OpensslFailure;
         var t: [A.tag_length]u8 = undefined;
         A.encrypt(ct[0..pt.len], &t, pt, ad, nonce[0..A.nonce_length].*, key[0..A.key_length].*);
         @memcpy(tag[0..A.tag_length], &t);
     }
     fn op(comptime A: type, key: []const u8, nonce: []const u8, ad: []const u8, ct: []const u8, tag: []const u8, pt: []u8) Error!void {
-        if (key.len != A.key_length or nonce.len != A.nonce_length or tag.len != A.tag_length or pt.len < ct.len) return error.OpensslFailure;
-        A.decrypt(pt[0..ct.len], ct, tag[0..A.tag_length].*, ad, nonce[0..A.nonce_length].*, key[0..A.key_length].*) catch return error.AuthFailed;
+        if (key.len != A.key_length or nonce.len != A.nonce_length or tag.len != A.tag_length or pt.len < ct.len or
+            ct.len > std.math.maxInt(c_int) or ad.len > std.math.maxInt(c_int)) return error.OpensslFailure;
+        A.decrypt(pt[0..ct.len], ct, tag[0..A.tag_length].*, ad, nonce[0..A.nonce_length].*, key[0..A.key_length].*) catch {
+            secureZero(pt[0..ct.len]);
+            return error.AuthFailed;
+        };
     }
 };
 

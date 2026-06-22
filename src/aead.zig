@@ -5,6 +5,7 @@ const ffi = @import("ffi.zig");
 const c = ffi.c;
 const policy = @import("policy.zig");
 const provider = @import("provider.zig");
+const util = @import("util.zig");
 
 /// AES-GCM fixed parameters (SP 800-38D): 96-bit IV, 128-bit tag.
 const gcm_nonce_len = 12;
@@ -15,13 +16,6 @@ fn aeadKeyLen(alg: policy.Aead) usize {
         .aes_128_gcm => 16,
         .aes_256_gcm => 32,
     };
-}
-
-/// Guard usize→c_int narrowing: returns error.OpensslFailure when `len`
-/// exceeds c_int max, preventing silent truncation/UB in ReleaseFast.
-fn toCInt(len: usize) Aead.Error!c_int {
-    if (len > std.math.maxInt(c_int)) return error.OpensslFailure;
-    return @intCast(len);
 }
 
 pub const Aead = struct {
@@ -41,7 +35,8 @@ pub const Aead = struct {
     ) Error!void {
         provider.assertActive();
         if (key.len != aeadKeyLen(alg) or nonce.len != gcm_nonce_len or
-            tag.len != gcm_tag_len or ciphertext.len < plaintext.len)
+            tag.len != gcm_tag_len or ciphertext.len < plaintext.len or
+            ad.len > std.math.maxInt(c_int) or plaintext.len > std.math.maxInt(c_int))
             return error.OpensslFailure;
         const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_CIPHER_free(cipher);
@@ -49,19 +44,22 @@ pub const Aead = struct {
         defer c.EVP_CIPHER_CTX_free(ctx);
 
         if (c.EVP_EncryptInit_ex2(ctx, cipher, null, null, null) != 1) return error.OpensslFailure;
-        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_IVLEN, try toCInt(nonce.len), null) != 1) return error.OpensslFailure;
+        // nonce.len == gcm_nonce_len == 12 (proven by upfront guard); safe to @intCast.
+        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_IVLEN, @intCast(nonce.len), null) != 1) return error.OpensslFailure;
         if (c.EVP_EncryptInit_ex2(ctx, null, key.ptr, nonce.ptr, null) != 1) return error.OpensslFailure;
 
         var outl: c_int = 0;
         if (ad.len != 0) {
-            if (c.EVP_EncryptUpdate(ctx, null, &outl, ad.ptr, try toCInt(ad.len)) != 1) return error.OpensslFailure;
+            if (c.EVP_EncryptUpdate(ctx, null, &outl, ad.ptr, try ffi.toCInt(ad.len)) != 1) return error.OpensslFailure;
         }
         if (plaintext.len != 0) {
-            if (c.EVP_EncryptUpdate(ctx, ciphertext.ptr, &outl, plaintext.ptr, try toCInt(plaintext.len)) != 1) return error.OpensslFailure;
+            if (c.EVP_EncryptUpdate(ctx, ciphertext.ptr, &outl, plaintext.ptr, try ffi.toCInt(plaintext.len)) != 1) return error.OpensslFailure;
         }
         var finl: c_int = 0;
+        if (outl < 0) return error.OpensslFailure;
         if (c.EVP_EncryptFinal_ex(ctx, ciphertext.ptr + @as(usize, @intCast(outl)), &finl) != 1) return error.OpensslFailure;
-        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_GET_TAG, try toCInt(tag.len), tag.ptr) != 1) return error.OpensslFailure;
+        // tag.len == gcm_tag_len == 16 (proven by upfront guard); safe to @intCast.
+        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_GET_TAG, @intCast(tag.len), tag.ptr) != 1) return error.OpensslFailure;
     }
 
     /// AEAD open: decrypts `ciphertext` into `plaintext` and verifies
@@ -77,7 +75,8 @@ pub const Aead = struct {
     ) Error!void {
         provider.assertActive();
         if (key.len != aeadKeyLen(alg) or nonce.len != gcm_nonce_len or
-            tag.len != gcm_tag_len or plaintext.len < ciphertext.len)
+            tag.len != gcm_tag_len or plaintext.len < ciphertext.len or
+            ad.len > std.math.maxInt(c_int) or ciphertext.len > std.math.maxInt(c_int))
             return error.OpensslFailure;
         const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_CIPHER_free(cipher);
@@ -85,21 +84,28 @@ pub const Aead = struct {
         defer c.EVP_CIPHER_CTX_free(ctx);
 
         if (c.EVP_DecryptInit_ex2(ctx, cipher, null, null, null) != 1) return error.OpensslFailure;
-        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_IVLEN, try toCInt(nonce.len), null) != 1) return error.OpensslFailure;
+        // nonce.len == gcm_nonce_len == 12 (proven by upfront guard); safe to @intCast.
+        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_IVLEN, @intCast(nonce.len), null) != 1) return error.OpensslFailure;
         if (c.EVP_DecryptInit_ex2(ctx, null, key.ptr, nonce.ptr, null) != 1) return error.OpensslFailure;
 
         var outl: c_int = 0;
         if (ad.len != 0) {
-            if (c.EVP_DecryptUpdate(ctx, null, &outl, ad.ptr, try toCInt(ad.len)) != 1) return error.OpensslFailure;
+            if (c.EVP_DecryptUpdate(ctx, null, &outl, ad.ptr, try ffi.toCInt(ad.len)) != 1) return error.OpensslFailure;
         }
         if (ciphertext.len != 0) {
-            if (c.EVP_DecryptUpdate(ctx, plaintext.ptr, &outl, ciphertext.ptr, try toCInt(ciphertext.len)) != 1) return error.OpensslFailure;
+            if (c.EVP_DecryptUpdate(ctx, plaintext.ptr, &outl, ciphertext.ptr, try ffi.toCInt(ciphertext.len)) != 1) return error.OpensslFailure;
         }
         // Set the expected tag before the final call.
-        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_TAG, try toCInt(tag.len), @constCast(tag.ptr)) != 1) return error.OpensslFailure;
+        // tag.len == gcm_tag_len == 16 (proven by upfront guard); safe to @intCast.
+        if (c.EVP_CIPHER_CTX_ctrl(ctx, c.EVP_CTRL_AEAD_SET_TAG, @intCast(tag.len), @constCast(tag.ptr)) != 1) return error.OpensslFailure;
         var finl: c_int = 0;
+        if (outl < 0) return error.OpensslFailure;
         // A non-1 final indicates the tag failed to authenticate.
-        if (c.EVP_DecryptFinal_ex(ctx, plaintext.ptr + @as(usize, @intCast(outl)), &finl) != 1) return error.AuthFailed;
+        // Wipe any unverified plaintext written by EVP_DecryptUpdate before surfacing the failure.
+        if (c.EVP_DecryptFinal_ex(ctx, plaintext.ptr + @as(usize, @intCast(outl)), &finl) != 1) {
+            util.secureZero(plaintext[0..ciphertext.len]);
+            return error.AuthFailed;
+        }
     }
 };
 
@@ -161,7 +167,6 @@ test "Aead rejects wrong key/nonce/tag lengths" {
     const key32 = [_]u8{0} ** 32;
     const iv12 = [_]u8{0} ** 12;
     var ct: [4]u8 = undefined;
-    var pt: [4]u8 = undefined;
     var tag16: [16]u8 = undefined;
     // wrong key length for aes_256_gcm
     try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, key32[0..16], &iv12, "", "msg!", &ct, &tag16));
@@ -173,7 +178,39 @@ test "Aead rejects wrong key/nonce/tag lengths" {
     // seal: ciphertext buffer too small
     var ct_small: [3]u8 = undefined;
     try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, &key32, &iv12, "", "msg!", &ct_small, &tag16));
-    _ = &pt;
+
+    // open rejection cases — first produce a valid ct/tag via a correct seal.
+    const msg = "msg!";
+    try Aead.seal(.aes_256_gcm, &key32, &iv12, "", msg, &ct, &tag16);
+    var pt: [msg.len]u8 = undefined;
+    // open: wrong key length
+    try std.testing.expectError(error.OpensslFailure, Aead.open(.aes_256_gcm, key32[0..16], &iv12, "", &ct, &tag16, &pt));
+    // open: wrong nonce length
+    try std.testing.expectError(error.OpensslFailure, Aead.open(.aes_256_gcm, &key32, key32[0..11], "", &ct, &tag16, &pt));
+    // open: wrong tag length (15 bytes instead of 16)
+    var open_tag15: [15]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Aead.open(.aes_256_gcm, &key32, &iv12, "", &ct, &open_tag15, &pt));
+    // open: plaintext buffer too small
+    var pt_small: [msg.len - 1]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Aead.open(.aes_256_gcm, &key32, &iv12, "", &ct, &tag16, &pt_small));
+}
+
+test "Aead.open wipes plaintext on auth failure" {
+    const key = [_]u8{0x42} ** 32;
+    const iv = [_]u8{0x24} ** 12;
+    const msg = "secret message!!";
+    var ct: [msg.len]u8 = undefined;
+    var tag: [16]u8 = undefined;
+    try Aead.seal(.aes_256_gcm, &key, &iv, "", msg, &ct, &tag);
+
+    // Flip one tag byte so authentication will fail.
+    var bad_tag = tag;
+    bad_tag[0] ^= 0x01;
+
+    var pt = [_]u8{0xAB} ** msg.len;
+    try std.testing.expectError(error.AuthFailed, Aead.open(.aes_256_gcm, &key, &iv, "", &ct, &bad_tag, &pt));
+    // plaintext buffer must be zeroed after auth failure.
+    try std.testing.expect(std.mem.allEqual(u8, &pt, 0));
 }
 
 test "Aead rejects an associated-data slice longer than c_int" {

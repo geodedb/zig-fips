@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Thread-safe + lock-free fast-path FIPS provider initialization
   (`src/provider.zig`); `EVP_default_properties fips=yes` set on the
   library context; base provider loaded alongside FIPS provider
-- Per-call EVP fetch cache (`provider.fetchCipher`/`fetchMd`/`fetchMac`)
+- Per-call EVP fetch cache (`provider.cipherFor`/`mdFor`/`hmacMac`/`kdfHkdf`/`kdfPbkdf2`)
   over the FIPS library context; eliminates per-call provider lookups on
   the hot path while preserving the `fips=yes` guarantee
 
@@ -38,10 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clone`, `final`; `update` is fallible to propagate OpenSSL errors; MD
   object up-ref'd on `clone`
 - `Hash.digest` and `Hash.Stream.final` bounds-check the output buffer
-- `Mac.compute` HMAC over any approved SHA-2/3 digest
+- `Mac.hmac` HMAC over any approved SHA-2/3 digest
 - `Kdf.hkdf` (SP 800-56C extract+expand), `Kdf.hkdfExpand` (expand-only)
-- `Kdf.pbkdf2` (SP 800-132); enforces minimum iteration count (600 000),
-  minimum salt length (16 bytes), minimum key length (14 bytes)
+- `Kdf.pbkdf2` (SP 800-132); enforces minimum 1000 iterations (SP 800-132)
+  and 16-byte salt (128-bit minimum per SP 800-132)
 - `Aead.seal`/`open` AES-128-GCM and AES-256-GCM; validates exact
   `key.len`, `nonce.len == 12`, `tag.len == 16`, and output-buffer size;
   wipes unverified plaintext on authentication failure in `open`
@@ -71,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### CSPRNG
 
 - `Csprng.bytes(out)` SP 800-90A DRBG via `RAND_bytes` under the validated
-  provider (fips backend); portable `std.crypto.random` path (shim)
+  provider (fips backend); `getrandom` syscall path on Linux (shim;
+  macOS / Windows runtime deferred)
 
 #### Comptime policy
 

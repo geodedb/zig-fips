@@ -204,12 +204,10 @@ local dependency or a non-portable code path.
    algorithm or seam behavior.
 
 2. **`std_shim` macOS / Windows CSPRNG portability.** The non-FIPS
-   backend (`std_shim.zig`) sources randomness from `std.crypto.random` /
-   the platform CSPRNG. The Linux path is exercised in CI; the macOS and
-   Windows CSPRNG paths (`getrandom` vs `SecRandomCopyBytes` vs
-   `BCryptGenRandom` selection inside `std`) are **not yet gated** because
-   the cross-OS FIPS jobs are advisory (`*cross-os-rules`,
-   `allow_failure: true`). Follow-up:
+   backend (`std_shim.zig`) sources randomness from the `getrandom` syscall
+   (Linux); macOS and Windows runtime paths (`SecRandomCopyBytes` /
+   `BCryptGenRandom`) are **not yet gated** because the cross-OS FIPS jobs
+   are advisory (`*cross-os-rules`, `allow_failure: true`). Follow-up:
    - Add a small `std_shim` CSPRNG unit test that asserts non-zero,
      non-repeating output and run it on the macOS + Windows runners via
      the gated `zig-fips-build` cross-OS variants (or a dedicated

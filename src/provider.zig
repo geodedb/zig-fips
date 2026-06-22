@@ -57,7 +57,7 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
     if (g_ready.load(.acquire)) return; // fast path: fully initialized, no lock
     muLock();
     defer g_mu.unlock();
-    if (g_fips != null) return; // another thread initialized while we waited
+    if (g_ready.load(.acquire)) return; // in-lock recheck: another thread may have finished
     // libCtx() also takes g_mu — call the unlocked core to avoid deadlock.
     const ctx = ctxLocked();
     // The FIPS provider self-test needs the install config data
@@ -66,19 +66,28 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
     // default, so without this the provider fails with
     // "SELF_TEST_post: missing config data". Load OPENSSL_CONF when set,
     // otherwise the libcrypto's compiled-in default config file (NULL).
+    // This call is idempotent and needed for self-test; it runs on every
+    // attempt including retries after partial-init.
     const conf = c.getenv("OPENSSL_CONF"); // null when unset => default config
     if (c.OSSL_LIB_CTX_load_config(ctx, conf) != 1) return error.FipsProviderUnavailable;
-    // base provider supplies non-cryptographic encoders the fips
-    // provider relies on (e.g. key serialization). SEC-1013: check return.
-    if (c.OSSL_PROVIDER_load(ctx, "base") == null) return error.FipsProviderUnavailable;
-    const fips = c.OSSL_PROVIDER_load(ctx, "fips") orelse return error.FipsProviderUnavailable;
-    if (c.EVP_default_properties_enable_fips(ctx, 1) != 1) return error.FipsProviderUnavailable;
-    // Self-test: provider must report available (runs KATs on load).
-    if (c.OSSL_PROVIDER_self_test(fips) != 1) return error.FipsProviderUnavailable;
-    g_fips = fips;
+    // Provider-load guard: skip if g_fips is already set (e.g. retry after
+    // partial-init failure during cache population). OSSL_PROVIDER_load is
+    // NOT idempotent so it must run at most once.
+    if (g_fips == null) {
+        // base provider supplies non-cryptographic encoders the fips
+        // provider relies on (e.g. key serialization). SEC-1013: check return.
+        if (c.OSSL_PROVIDER_load(ctx, "base") == null) return error.FipsProviderUnavailable;
+        const fips = c.OSSL_PROVIDER_load(ctx, "fips") orelse return error.FipsProviderUnavailable;
+        if (c.EVP_default_properties_enable_fips(ctx, 1) != 1) return error.FipsProviderUnavailable;
+        // Self-test: provider must report available (runs KATs on load).
+        if (c.OSSL_PROVIDER_self_test(fips) != 1) return error.FipsProviderUnavailable;
+        g_fips = fips;
+    }
     // Populate the caches under the already-held init lock, BEFORE the
     // release-store.  Every future acquire-load of g_ready happens-after
-    // this, so cache reads need no lock.
+    // this, so cache reads need no lock.  Cache population runs on every
+    // attempt (including retries) so a partial-init that failed mid-cache
+    // will re-populate fully before publishing g_ready=true.
     inline for (@typeInfo(policy.Aead).@"enum".fields, 0..) |_, i| {
         const alg: policy.Aead = @enumFromInt(i);
         g_ciphers[i] = c.EVP_CIPHER_fetch(ctx, policy.aeadName(alg), "fips=yes") orelse
@@ -159,4 +168,16 @@ test "concurrent first-use init is race-free and converges to one context" {
     // After the storm there must be exactly one lib context + one provider.
     try ensureFips();
     try std.testing.expect(g_ctx != null and g_fips != null);
+}
+
+test "ensureFips is all-or-nothing: retry after partial-init re-publishes" {
+    // Simulate a partial-init state: provider loaded, caches populated,
+    // but g_ready not yet visible (e.g. another goroutine failed mid-init).
+    try ensureFips();
+    // Force g_ready back to false to simulate a partial-init retry scenario.
+    g_ready.store(false, .monotonic);
+    // A retry must re-publish rather than early-returning due to g_fips != null.
+    try ensureFips();
+    try std.testing.expect(g_ready.load(.monotonic) == true);
+    try std.testing.expect(cipherFor(.aes_256_gcm) != null);
 }

@@ -52,8 +52,8 @@ implement them identically (see the spec's "Shared contract"):
 | `Sig` RSA | full (RSA-PSS / PKCS1) | `error.Unsupported` (std has no RSA) |
 | `Sig` ML-DSA / SLH-DSA | full | `error.Unsupported` (fips-only) |
 | `Kem` ML-KEM + hybrids | full | `error.Unsupported` (fips-only) |
-| `secureZero(buf: []u8)` | `OPENSSL_cleanse` | `@memset` + `@fence` |
-| `timingSafeEql(a, b: []const u8) bool` | `CRYPTO_memcmp` | `std.crypto.timing_safe.eql` |
+| `secureZero(buf: []u8)` | `OPENSSL_cleanse` | `std.crypto.secureZero(u8, buf)` |
+| `timingSafeEql(a, b: []const u8) bool` | `CRYPTO_memcmp` | constant-time `diff \|= x ^ y` loop |
 
 ### Cross-backend caveats
 

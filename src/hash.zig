@@ -43,7 +43,8 @@ pub const Hash = struct {
         /// EVP_MD and initialises a fresh context.
         pub fn init(alg: policy.Hash) Error!Stream {
             provider.assertActive();
-            const md = c.EVP_MD_fetch(provider.libCtx(), policy.hashName(alg), "fips=yes") orelse return error.Unsupported;
+            const md = provider.mdFor(alg) orelse return error.Unsupported;
+            if (c.EVP_MD_up_ref(md) != 1) return error.OpensslFailure;
             errdefer c.EVP_MD_free(md);
             const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
             errdefer c.EVP_MD_CTX_free(ctx);

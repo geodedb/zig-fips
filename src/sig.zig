@@ -42,6 +42,16 @@ fn assertRsaStrength(pkey: *c.EVP_PKEY) Sig.Error!void {
     if (c.BN_cmp(e, bn_65537) < 0) return error.Unsupported;
 }
 
+/// Cheap RSA key binding for the per-op verify/sign hot path: confirms the
+/// key is RSA and meets the 2048-bit floor WITHOUT the BIGNUM exponent
+/// check. The exponent is validated once at import/construction by
+/// `assertRsaStrength`, and an `EVP_PKEY` is immutable thereafter, so the
+/// per-op path does not re-derive `e` (avoids two heap allocations per op).
+fn assertRsaUsable(pkey: *c.EVP_PKEY) Sig.Error!void {
+    if (c.EVP_PKEY_is_a(pkey, "RSA") != 1) return error.Unsupported;
+    if (c.EVP_PKEY_get_bits(pkey) < min_rsa_bits) return error.Unsupported;
+}
+
 fn ecGroup(alg: policy.SigAlg) Sig.Error![:0]const u8 {
     return switch (alg) {
         .ecdsa_p256 => "P-256",
@@ -237,7 +247,7 @@ pub const Sig = struct {
     /// signature.
     pub fn verify(alg: policy.SigAlg, kp: *KeyPair, msg: []const u8, sig: []const u8) Error!void {
         provider.assertActive();
-        if (sigIsRsa(alg)) try assertRsaStrength(kp.pkey);
+        if (sigIsRsa(alg)) try assertRsaUsable(kp.pkey);
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);
 
@@ -265,7 +275,7 @@ pub const Sig = struct {
         sig: []const u8,
     ) Error!void {
         provider.assertActive();
-        try assertRsaStrength(kp.pkey);
+        try assertRsaUsable(kp.pkey);
         const mdname = try explicitDigest(digest);
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);

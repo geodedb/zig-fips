@@ -106,6 +106,8 @@ pub const Sig = struct {
                     break :blk c.d2i_PUBKEY(null, &pp, try ffi.toCLong(raw.len));
                 },
             } orelse return error.OpensslFailure;
+            errdefer c.EVP_PKEY_free(pkey);
+            if (sigIsRsa(alg)) try assertRsaStrength(pkey);
             return .{ .pkey = pkey };
         }
 
@@ -120,6 +122,8 @@ pub const Sig = struct {
                     break :blk c.d2i_PrivateKey(t, null, &pp, try ffi.toCLong(raw.len));
                 },
             } orelse return error.OpensslFailure;
+            errdefer c.EVP_PKEY_free(pkey);
+            if (sigIsRsa(alg)) try assertRsaStrength(pkey);
             return .{ .pkey = pkey };
         }
 
@@ -223,6 +227,7 @@ pub const Sig = struct {
     /// signature.
     pub fn verify(alg: policy.SigAlg, kp: *KeyPair, msg: []const u8, sig: []const u8) Error!void {
         provider.assertActive();
+        if (sigIsRsa(alg)) try assertRsaStrength(kp.pkey);
         const ctx = c.EVP_MD_CTX_new() orelse return error.OpensslFailure;
         defer c.EVP_MD_CTX_free(ctx);
 
@@ -672,4 +677,57 @@ test "SLH-DSA all 12 variants sign->verify + tamper" {
         try Sig.verify(alg, &kp, "slh-dsa kat", sig[0..n]);
         try std.testing.expectError(error.VerifyFailed, Sig.verify(alg, &kp, "tampered", sig[0..n]));
     }
+}
+
+test "fromPublicBytes rejects sub-2048-bit (1024-bit) RSA SPKI DER" {
+    // Build a 1024-bit RSA public key via raw EVP_PKEY_fromdata over a
+    // default-provider libCtx (no FIPS strength enforcement there).  This
+    // lets us craft the weak DER blob without FIPS keygen, which refuses
+    // 1024-bit RSA.  We then verify the FIPS seam rejects it on import.
+    // Use a default-provider context (null) for the weak keygen only.
+    const n = [_]u8{0xC0} ++ [_]u8{0xFF} ** 126 ++ [_]u8{0x01}; // 128-byte modulus, high bit set
+    const e_bytes = [_]u8{ 0x01, 0x00, 0x01 }; // 65537
+
+    const bn_n = c.BN_bin2bn(&n, n.len, null) orelse return error.SkipZigTest;
+    defer c.BN_free(bn_n);
+    const bn_e = c.BN_bin2bn(&e_bytes, e_bytes.len, null) orelse return error.SkipZigTest;
+    defer c.BN_free(bn_e);
+
+    const bld = c.OSSL_PARAM_BLD_new() orelse return error.SkipZigTest;
+    defer c.OSSL_PARAM_BLD_free(bld);
+    if (c.OSSL_PARAM_BLD_push_BN(bld, c.OSSL_PKEY_PARAM_RSA_N, bn_n) != 1) return error.SkipZigTest;
+    if (c.OSSL_PARAM_BLD_push_BN(bld, c.OSSL_PKEY_PARAM_RSA_E, bn_e) != 1) return error.SkipZigTest;
+    const params = c.OSSL_PARAM_BLD_to_param(bld) orelse return error.SkipZigTest;
+    defer c.OSSL_PARAM_free(params);
+
+    // Use the default (non-FIPS) lib context (null) so RSA 1024-bit keygen is allowed.
+    const pctx = c.EVP_PKEY_CTX_new_from_name(null, "RSA", null) orelse return error.SkipZigTest;
+    defer c.EVP_PKEY_CTX_free(pctx);
+    if (c.EVP_PKEY_fromdata_init(pctx) != 1) return error.SkipZigTest;
+    var weak_pkey: ?*c.EVP_PKEY = null;
+    if (c.EVP_PKEY_fromdata(pctx, &weak_pkey, c.EVP_PKEY_PUBLIC_KEY, params) != 1) return error.SkipZigTest;
+    const wk = weak_pkey orelse return error.SkipZigTest;
+    defer c.EVP_PKEY_free(wk);
+
+    // Export weak key to SPKI DER via i2d_PUBKEY.
+    var der_buf: [512]u8 = undefined;
+    var der_ptr: [*c]u8 = &der_buf;
+    const der_len = c.i2d_PUBKEY(wk, &der_ptr);
+    if (der_len <= 0) return error.SkipZigTest;
+
+    // Positive case: a normal ≥2048-bit RSA key must still import fine.
+    var strong = try Sig.generate(.rsa_pkcs1);
+    defer strong.deinit();
+    var spki: [1024]u8 = undefined;
+    var sp: [*c]u8 = &spki;
+    const spki_len = c.i2d_PUBKEY(strong.pkey, &sp);
+    try std.testing.expect(spki_len > 0);
+    var imported_strong = try Sig.KeyPair.fromPublicBytes(.rsa_pkcs1, spki[0..@intCast(spki_len)]);
+    defer imported_strong.deinit();
+
+    // Rejection: importing the 1024-bit SPKI must return error.Unsupported.
+    try std.testing.expectError(
+        error.Unsupported,
+        Sig.KeyPair.fromPublicBytes(.rsa_pkcs1, der_buf[0..@intCast(der_len)]),
+    );
 }

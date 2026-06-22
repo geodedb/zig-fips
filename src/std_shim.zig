@@ -469,6 +469,15 @@ pub fn timingSafeEql(a: []const u8, b: []const u8) bool {
 /// No-op in the non-fips backend (there is no FIPS provider to assert).
 pub fn assertActive() void {}
 
+/// Fallible FIPS startup gate. No-op success in the non-fips shim (there
+/// is no FIPS provider to load). The fips backend returns
+/// `error.FipsProviderUnavailable` when the FIPS module cannot be loaded
+/// or self-tested. Use this at program startup under `-Dfips=true` for a
+/// graceful error instead of a panic.
+pub fn ensureFips() error{FipsProviderUnavailable}!void {
+    return; // shim: always succeeds — no provider to load
+}
+
 fn copyOut(out: []u8, src: []const u8) Sig.Error!usize {
     if (out.len < src.len) return error.OpensslFailure;
     @memcpy(out[0..src.len], src);

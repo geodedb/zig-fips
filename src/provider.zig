@@ -64,20 +64,18 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
     if (g_ready.load(.acquire)) return; // in-lock recheck: another thread may have finished
     // libCtx() also takes g_mu — call the unlocked core to avoid deadlock.
     const ctx = ctxLocked();
-    // The FIPS provider self-test needs the install config data
-    // (fipsmodule.cnf install-MAC, referenced from openssl.cnf). A fresh
-    // OSSL_LIB_CTX created via OSSL_LIB_CTX_new() loads NO config by
-    // default, so without this the provider fails with
-    // "SELF_TEST_post: missing config data". Load OPENSSL_CONF when set,
-    // otherwise the libcrypto's compiled-in default config file (NULL).
-    // This call is idempotent and needed for self-test; it runs on every
-    // attempt including retries after partial-init.
-    const conf = c.getenv("OPENSSL_CONF"); // null when unset => default config
-    if (c.OSSL_LIB_CTX_load_config(ctx, conf) != 1) return error.FipsProviderUnavailable;
-    // Provider-load guard: skip if g_fips is already set (e.g. retry after
-    // partial-init failure during cache population). OSSL_PROVIDER_load is
-    // NOT idempotent so it must run at most once.
+    // Provider load + self-test + config load run AT MOST ONCE (none are
+    // guaranteed idempotent across repeated calls on the same lib ctx). On a
+    // retry after a partial-init failure during cache population, g_fips is
+    // already set and this whole block is skipped.
     if (g_fips == null) {
+        // The FIPS provider self-test needs the install config data
+        // (fipsmodule.cnf install-MAC, referenced from openssl.cnf). A fresh
+        // OSSL_LIB_CTX loads NO config by default, so without this the
+        // provider fails with "SELF_TEST_post: missing config data". Load
+        // OPENSSL_CONF when set, else the compiled-in default config (NULL).
+        const conf = c.getenv("OPENSSL_CONF"); // null when unset => default config
+        if (c.OSSL_LIB_CTX_load_config(ctx, conf) != 1) return error.FipsProviderUnavailable;
         // base provider supplies non-cryptographic encoders the fips
         // provider relies on (e.g. key serialization). SEC-1013: check return.
         if (c.OSSL_PROVIDER_load(ctx, "base") == null) return error.FipsProviderUnavailable;
@@ -88,23 +86,28 @@ pub fn ensureFips() error{FipsProviderUnavailable}!void {
         g_fips = fips;
     }
     // Populate the caches under the already-held init lock, BEFORE the
-    // release-store.  Every future acquire-load of g_ready happens-after
-    // this, so cache reads need no lock.  Cache population runs on every
-    // attempt (including retries) so a partial-init that failed mid-cache
-    // will re-populate fully before publishing g_ready=true.
+    // release-store, so post-publish acquire-loads observe fully-initialized
+    // caches without a lock. Each slot is fetched AT MOST ONCE: a non-null
+    // slot left by a prior failed attempt is kept (these objects are
+    // immutable, process-lifetime), so a retry re-fetches only the slots it
+    // had not yet filled and never leaks a previously-fetched handle.
     inline for (@typeInfo(policy.Aead).@"enum".fields, 0..) |_, i| {
-        const alg: policy.Aead = @enumFromInt(i);
-        g_ciphers[i] = c.EVP_CIPHER_fetch(ctx, policy.aeadName(alg), "fips=yes") orelse
-            return error.FipsProviderUnavailable;
+        if (g_ciphers[i] == null) {
+            const alg: policy.Aead = @enumFromInt(i);
+            g_ciphers[i] = c.EVP_CIPHER_fetch(ctx, policy.aeadName(alg), "fips=yes") orelse
+                return error.FipsProviderUnavailable;
+        }
     }
     inline for (@typeInfo(policy.Hash).@"enum".fields, 0..) |_, i| {
-        const alg: policy.Hash = @enumFromInt(i);
-        g_mds[i] = c.EVP_MD_fetch(ctx, policy.hashName(alg), "fips=yes") orelse
-            return error.FipsProviderUnavailable;
+        if (g_mds[i] == null) {
+            const alg: policy.Hash = @enumFromInt(i);
+            g_mds[i] = c.EVP_MD_fetch(ctx, policy.hashName(alg), "fips=yes") orelse
+                return error.FipsProviderUnavailable;
+        }
     }
-    g_hmac = c.EVP_MAC_fetch(ctx, "HMAC", "fips=yes") orelse return error.FipsProviderUnavailable;
-    g_kdf_hkdf = c.EVP_KDF_fetch(ctx, "HKDF", "fips=yes") orelse return error.FipsProviderUnavailable;
-    g_kdf_pbkdf2 = c.EVP_KDF_fetch(ctx, "PBKDF2", "fips=yes") orelse return error.FipsProviderUnavailable;
+    if (g_hmac == null) g_hmac = c.EVP_MAC_fetch(ctx, "HMAC", "fips=yes") orelse return error.FipsProviderUnavailable;
+    if (g_kdf_hkdf == null) g_kdf_hkdf = c.EVP_KDF_fetch(ctx, "HKDF", "fips=yes") orelse return error.FipsProviderUnavailable;
+    if (g_kdf_pbkdf2 == null) g_kdf_pbkdf2 = c.EVP_KDF_fetch(ctx, "PBKDF2", "fips=yes") orelse return error.FipsProviderUnavailable;
     g_ready.store(true, .release); // publish: ctx + fips + caches fully initialized
 }
 

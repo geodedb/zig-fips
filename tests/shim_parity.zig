@@ -217,3 +217,8 @@ test "shim policy is the local canonical table" {
     try std.testing.expect(shim.policy.isApproved("AES-256-GCM"));
     try std.testing.expect(!shim.policy.isApproved("ChaCha20-Poly1305"));
 }
+test "shim secureZero wipes buffer" {
+    var buf = [_]u8{0x7e} ** 32;
+    shim.secureZero(&buf);
+    try std.testing.expect(std.mem.allEqual(u8, &buf, 0));
+}

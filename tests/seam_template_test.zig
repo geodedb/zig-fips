@@ -31,4 +31,8 @@ test "seam selects std_shim when fips=false and exposes the API" {
         // HashStream alias and the nested type are the same type.
         std.debug.assert(backend.HashStream == backend.Hash.Stream);
     }
+    // Parity: secureZero is exported from the seam template.
+    comptime {
+        _ = backend.secureZero;
+    }
 }

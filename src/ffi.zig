@@ -17,6 +17,7 @@ pub const c = @cImport({
     @cInclude("openssl/x509.h"); // d2i_PUBKEY / d2i_PrivateKey / i2d_PrivateKey
     @cInclude("openssl/err.h");
     @cInclude("stdlib.h"); // getenv (OPENSSL_CONF lookup)
+    @cInclude("openssl/crypto.h"); // OPENSSL_cleanse, CRYPTO_memcmp
 });
 
 const std = @import("std");

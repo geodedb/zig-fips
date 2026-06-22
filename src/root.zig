@@ -27,6 +27,7 @@ pub const Aead = @import("aead.zig").Aead;
 pub const Csprng = @import("csprng.zig").Csprng;
 pub const Sig = @import("sig.zig").Sig;
 pub const Kem = @import("kem.zig").Kem;
+pub const secureZero = @import("util.zig").secureZero;
 
 test "package version is set" {
     const std = @import("std");
@@ -47,4 +48,5 @@ test {
     _ = @import("csprng.zig");
     _ = @import("sig.zig");
     _ = @import("kem.zig");
+    _ = @import("util.zig");
 }

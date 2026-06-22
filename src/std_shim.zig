@@ -174,6 +174,7 @@ pub const Kdf = struct {
         if (prk.len != H.prk_length) return error.OpensslFailure;
         if (out.len > H.prk_length * 255) return error.OpensslFailure;
         var prk_arr: [H.prk_length]u8 = undefined;
+        defer secureZero(&prk_arr);
         @memcpy(&prk_arr, prk[0..H.prk_length]);
         H.expand(out, info, prk_arr);
     }
@@ -298,6 +299,7 @@ pub const Sig = struct {
 
     pub fn generate(alg: policy.SigAlg) Error!KeyPair {
         var seed: [64]u8 = undefined;
+        defer secureZero(&seed);
         randomBytes(&seed);
         return switch (alg) {
             .ed25519 => .{ .inner = .{ .ed25519 = Ed25519.KeyPair.generateDeterministic(seed[0..Ed25519.KeyPair.seed_length].*) catch return error.OpensslFailure } },
@@ -441,6 +443,12 @@ pub const Csprng = struct {
         randomBytes(out);
     }
 };
+
+/// Best-effort guaranteed wipe (mirrors fips.secureZero). std's
+/// secureZero uses volatile writes the optimizer cannot elide.
+pub fn secureZero(buf: []u8) void {
+    std.crypto.secureZero(u8, buf);
+}
 
 /// No-op in the non-fips backend (there is no FIPS provider to assert).
 pub fn assertActive() void {}

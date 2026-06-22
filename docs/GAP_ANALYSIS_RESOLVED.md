@@ -48,7 +48,7 @@ macOS/Windows runtime coverage remains DEFERRED — tracked in `GAP_ANALYSIS.md`
 | QUAL-0011 | `Hash.Stream.update` panics in fips | Closed | `9830b02` | `src/hash.zig` tests; `Error!void` signature |
 | QUAL-0013 | No fips error-path tests | Closed | `5bdab65`, `e740b37` | `src/*.zig` negative tests; all Error members covered |
 | QUAL-0014 | Integration + stress suites are placeholders | Closed | `e49c75e` | `tests/integration.zig`, `tests/stress.zig` |
-| QUAL-0015 | No concurrency test; `g_ctx`/`g_fips` race | Closed | `db54ab2`, `1f25ebb` | `tests/provider.zig` TSan concurrency test |
+| QUAL-0015 | No concurrency test; `g_ctx`/`g_fips` race | Closed | `db54ab2`, `1f25ebb` | `src/provider.zig` TSan concurrency test |
 | QUAL-0016 | `ecGroup` `else => unreachable` UB | Closed | `84c6ea9` | `src/sig.zig` exhaustive match |
 | QUAL-0017 | CHANGELOG unfilled template | Closed | `242740a` | No `YYYY-MM-DD` placeholder |
 | QUAL-0018 | `Hash.Stream` doc comment overstates invariant | Closed | `9830b02` | Doc comment updated alongside `Error!void` change |
@@ -71,7 +71,7 @@ macOS/Windows runtime coverage remains DEFERRED — tracked in `GAP_ANALYSIS.md`
 |----|-------|--------|-----------|-------------------|
 | PERF-0001 | `EVP_*_fetch` on every AEAD/MAC/hash/KDF call | Closed | `9a01666` | Benchmarks: ~44% AES-256-GCM-64B, ~40% SHA-256-64B, ~32% HMAC lift |
 | PERF-0004 | `Hash.Stream.clone()` re-fetches `EVP_MD` | Closed | `9830b02` | `src/hash.zig` clone tests |
-| PERF-0005 | Unsynchronized lazy global init | Closed | `db54ab2`, `1f25ebb` | `tests/provider.zig` TSan concurrency test |
+| PERF-0005 | Unsynchronized lazy global init | Closed | `db54ab2`, `1f25ebb` | `src/provider.zig` TSan concurrency test |
 | PERF-0006 | Benchmark suite measures no crypto | Closed | `90ba16d` | Real benchmarks in `benchmarks/` |
 | PERF-0009 | `git rev-parse` per bench process | Not-a-defect | — | One-time, untimed; no action needed |
 
@@ -92,7 +92,7 @@ bit-size): DEFERRED — tracked in `PERF_GAP_ANALYSIS.md`.
 | SEC-1003 | RSA verify accepts weak/undersized key on import | Closed | `e08c480` | `tests/sig.zig` weak-key, type-binding tests |
 | SEC-1004 (F1) | No zeroization of secret material | Closed | `4eacfcf`, `16eac47` | `src/util.zig`, `tests/aead.zig` |
 | SEC-1005 (F2) | No constant-time comparison | Closed | `0668f00` | Parity test in shim + fips backends |
-| SEC-1006 (F4) | Unsynchronized provider globals | Closed | `db54ab2`, `1f25ebb` | `tests/provider.zig` TSan concurrency test |
+| SEC-1006 (F4) | Unsynchronized provider globals | Closed | `db54ab2`, `1f25ebb` | `src/provider.zig` TSan concurrency test |
 | SEC-1007 (F5) | Length truncation to `c_int` | Closed | `91563c1`, `16eac47` | `src/ffi.zig` toCInt/toCLong helpers + tests |
 | SEC-1008 (F6) | Stream.update panics on EVP failure | Closed | `9830b02` | `src/hash.zig` tests; `Error!void` signature |
 | SEC-1009 (F7) | PBKDF2 disables FIPS minimums | Closed | `f22c4b9` | `src/kdf.zig` tests |
@@ -124,3 +124,16 @@ artifact scope narrowing DEFERRED — tracked in `SECURITY_GAP_ANALYSIS.md`.
 **Net still-open (not deferred):** QUAL-0004, QUAL-0009, QUAL-0012 (open-minor),
 QUAL-0003 (open-minor, partial), GAP-0027 runtime, GAP-0030, SEC-1012, SEC-1014
 partial, PERF-0007, PERF-0008.
+
+## Round-2/3 resolved (2026-06-22)
+
+| ID | Title | Commit |
+| --- | --- | --- |
+| SEC-2001 | provider partial-init fail-open | `5325d0f` |
+| SEC-2002 | CI GPG authenticity check + REQUIRE_GPG | `5395288` |
+| SEC-2003 | RSA exponent FIPS validation (`e` odd, >=65537) | `f55d176` |
+| PERF-0010 | KDF fetch cache | `8b859a1` |
+| PERF-0011 | `Stream.init` MD up_ref | `b8410f9` |
+| PERF-0012 | bench optimize-mode note | `07ccfa1` |
+| GAP-0031 | CHANGELOG/spec accuracy | `2805a55` |
+| QUAL-0020..0023 | stale comments/citations + policy scaffolding note | `07ccfa1` |

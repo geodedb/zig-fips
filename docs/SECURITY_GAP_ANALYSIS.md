@@ -113,7 +113,7 @@ shapes, not classic web-app injection.
   with a mutex; commit `1f25ebb` adds a lock-free fast path for steady-state
   checks. TSan concurrency test added to `provider.zig`.
 - **Commits:** `db54ab2`, `1f25ebb`
-- **Verifying tests:** `tests/provider.zig` (TSan concurrency test)
+- **Verifying tests:** `src/provider.zig` (TSan concurrency test)
 - **Original severity:** Medium
 
 ### SEC-1007 (F5) — Length truncation to `c_int` — CLOSED
@@ -209,3 +209,13 @@ shapes, not classic web-app injection.
 | Partially-closed / Deferred | 1 | SEC-1014 |
 | Deferred | 1 | SEC-1012 |
 | **Total** | **17** | |
+
+## Round-2/3 re-review closure (2026-06-22)
+
+Findings surfaced by the post-hardening re-audit, now closed:
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| SEC-2001 | `ensureFips` partial-init fail-open (in-lock recheck keyed on `g_fips`, not `g_ready`) | Closed | `5325d0f` |
+| SEC-2002 | CI `fips-deps` skipped GPG: SHA-256-only is same-origin integrity, not authenticity | Closed | `5395288` |
+| SEC-2003 | RSA exponent not FIPS-validated (`e=1`/even `e` accepted on import -> forgery vector) | Closed | `f55d176` |

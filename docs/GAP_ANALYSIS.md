@@ -207,3 +207,9 @@ ID owned by `docs/GAP-0020-module-dedup.md`, so new IDs start at **GAP-0021**.
 | Docs | GAP-0026, GAP-0029 | Both closed |
 | Feature | GAP-0027, GAP-0028 | Partially-closed+deferred; resolved-by-doc |
 | Requirement | GAP-0030 | Deferred |
+
+## Round-2/3 re-review closure (2026-06-22)
+
+| Gap-ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| GAP-0031 | CHANGELOG/FIPS_SPEC named non-existent APIs + wrong PBKDF2 numbers + wrong shim CSPRNG | Closed | `2805a55` |

@@ -94,7 +94,7 @@ backend consumed by high-throughput servers (TLS, QUIC, WireGuard).
   mutex + lock-free fast path for steady-state reads. Cold-start race and
   double provider load eliminated; TSan-clean.
 - **Commits:** `db54ab2`, `1f25ebb`
-- **Verifying tests:** `tests/provider.zig` (TSan concurrency test)
+- **Verifying tests:** `src/provider.zig` (TSan concurrency test)
 - **Original severity:** P2
 
 ### PERF-0006 — Benchmark suite measures no crypto — CLOSED
@@ -127,3 +127,13 @@ backend consumed by high-throughput servers (TLS, QUIC, WireGuard).
 
 **Round-1 counts:** Closed 4 · Substantially-addressed/Deferred 2 ·
 Deferred 2 · Not-a-defect 1.
+
+## Round-2/3 re-review closure (2026-06-22)
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| PERF-0010 | KDF hot path (`EVP_KDF_fetch` per call) was not covered by the fetch cache | Closed | `8b859a1` |
+| PERF-0011 | `Hash.Stream.init` re-fetched the MD instead of up-reffing the cached one | Closed | `b8410f9` |
+| PERF-0012 | Bench-imported `fips` lib follows top-level optimize (Debug) under bare `zig build bench` | Resolved-by-doc | `07ccfa1` |
+
+PERF-0001 update: the fetch cache now also covers HKDF + PBKDF2 (`g_kdf_hkdf`/`g_kdf_pbkdf2`, commit `8b859a1`), so all AEAD/Hash/HMAC/KDF one-shot ops skip the per-call provider lookup.

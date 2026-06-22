@@ -179,7 +179,7 @@ These are genuinely good and should not be "fixed":
   FIPS init with a mutex + lock-free fast path; a TSan-green multi-threaded
   test in `provider.zig` verifies no data race.
 - **Commits:** `db54ab2`, `1f25ebb`
-- **Verifying tests:** `tests/provider.zig` (TSan concurrency test)
+- **Verifying tests:** `src/provider.zig` (TSan concurrency test)
 - **Original severity:** High
 
 ### QUAL-0016 — `ecGroup` `else => unreachable` over a growing enum — CLOSED
@@ -242,3 +242,12 @@ These are genuinely good and should not be "fixed":
 
 **Round-1 counts:** Closed 11 · Resolved-by-doc 3 · Not-a-defect 1 ·
 Open-minor 4 (QUAL-0003 partially, QUAL-0004, QUAL-0009, QUAL-0012).
+
+## Round-2/3 re-review closure (2026-06-22)
+
+| ID | Title | Status | Commit |
+| --- | --- | --- | --- |
+| QUAL-0020 | `tests/stress.zig` doc comment described a placeholder (now real load + threads) | Closed | `07ccfa1` |
+| QUAL-0021 | `benchmarks/README.md` still said "replace the placeholder scenarios" | Closed | `07ccfa1` |
+| QUAL-0022 | Docs cited a non-existent `tests/provider.zig` for the concurrency test | Closed | docs |
+| QUAL-0023 | Dead `policy.Mac`/`policy.Kdf`/`kdfName` annotated as spec-completeness scaffolding | Closed | `07ccfa1` |

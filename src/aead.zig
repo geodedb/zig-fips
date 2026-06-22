@@ -6,6 +6,17 @@ const c = ffi.c;
 const policy = @import("policy.zig");
 const provider = @import("provider.zig");
 
+/// AES-GCM fixed parameters (SP 800-38D): 96-bit IV, 128-bit tag.
+const gcm_nonce_len = 12;
+const gcm_tag_len = 16;
+
+fn aeadKeyLen(alg: policy.Aead) usize {
+    return switch (alg) {
+        .aes_128_gcm => 16,
+        .aes_256_gcm => 32,
+    };
+}
+
 pub const Aead = struct {
     pub const Error = error{ Unsupported, AuthFailed, OpensslFailure };
 
@@ -22,6 +33,9 @@ pub const Aead = struct {
         tag: []u8,
     ) Error!void {
         provider.assertActive();
+        if (key.len != aeadKeyLen(alg) or nonce.len != gcm_nonce_len or
+            tag.len != gcm_tag_len or ciphertext.len < plaintext.len)
+            return error.OpensslFailure;
         const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_CIPHER_free(cipher);
         const ctx = c.EVP_CIPHER_CTX_new() orelse return error.OpensslFailure;
@@ -55,6 +69,9 @@ pub const Aead = struct {
         plaintext: []u8,
     ) Error!void {
         provider.assertActive();
+        if (key.len != aeadKeyLen(alg) or nonce.len != gcm_nonce_len or
+            tag.len != gcm_tag_len or plaintext.len < ciphertext.len)
+            return error.OpensslFailure;
         const cipher = c.EVP_CIPHER_fetch(provider.libCtx(), policy.aeadName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_CIPHER_free(cipher);
         const ctx = c.EVP_CIPHER_CTX_new() orelse return error.OpensslFailure;
@@ -120,4 +137,34 @@ test "AES-128-GCM round-trip" {
     var pt: [msg.len]u8 = undefined;
     try Aead.open(.aes_128_gcm, &key, &iv, &.{}, &ct, &tag, &pt);
     try std.testing.expectEqualSlices(u8, msg, &pt);
+}
+
+test "Aead.open rejects undersized plaintext buffer (no overrun)" {
+    const key = [_]u8{0x42} ** 32;
+    const iv = [_]u8{0x24} ** 12;
+    const msg = "the quick brown fox";
+    var ct: [msg.len]u8 = undefined;
+    var tag: [16]u8 = undefined;
+    try Aead.seal(.aes_256_gcm, &key, &iv, "", msg, &ct, &tag);
+    var too_small: [msg.len - 1]u8 = undefined; // one byte short
+    try std.testing.expectError(error.OpensslFailure, Aead.open(.aes_256_gcm, &key, &iv, "", &ct, &tag, &too_small));
+}
+
+test "Aead rejects wrong key/nonce/tag lengths" {
+    const key32 = [_]u8{0} ** 32;
+    const iv12 = [_]u8{0} ** 12;
+    var ct: [4]u8 = undefined;
+    var pt: [4]u8 = undefined;
+    var tag16: [16]u8 = undefined;
+    // wrong key length for aes_256_gcm
+    try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, key32[0..16], &iv12, "", "msg!", &ct, &tag16));
+    // wrong nonce length (must be 12 for GCM)
+    try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, &key32, key32[0..11], "", "msg!", &ct, &tag16));
+    // wrong tag length
+    var tag15: [15]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, &key32, &iv12, "", "msg!", &ct, &tag15));
+    // seal: ciphertext buffer too small
+    var ct_small: [3]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Aead.seal(.aes_256_gcm, &key32, &iv12, "", "msg!", &ct_small, &tag16));
+    _ = &pt;
 }

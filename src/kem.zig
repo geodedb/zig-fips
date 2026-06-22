@@ -66,6 +66,22 @@ pub const Kem = struct {
     }
 };
 
+test "Kem.encapsulate rejects undersized ct_out and ss_out buffers" {
+    // The size-query path sets ct_len/ss_len; the guard
+    // `if (ct_len > ct_out.len or ss_len > ss_out.len)` returns
+    // error.OpensslFailure before any write occurs.
+    var kp = try Kem.generate(.ml_kem_768);
+    defer kp.deinit();
+    var ct_ok: [2048]u8 = undefined;
+    var ss_ok: [128]u8 = undefined;
+    var ct_tiny: [1]u8 = undefined;
+    var ss_tiny: [1]u8 = undefined;
+    // Too-small ciphertext buffer.
+    try std.testing.expectError(error.OpensslFailure, Kem.encapsulate(.ml_kem_768, &kp, &ct_tiny, &ss_ok));
+    // Too-small shared-secret buffer.
+    try std.testing.expectError(error.OpensslFailure, Kem.encapsulate(.ml_kem_768, &kp, &ct_ok, &ss_tiny));
+}
+
 test "ML-KEM-768 encap/decap shared secret agree" {
     const util = @import("util.zig");
     var kp = try Kem.generate(.ml_kem_768);

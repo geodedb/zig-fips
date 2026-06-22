@@ -34,6 +34,13 @@ pub const Mac = struct {
     }
 };
 
+test "Mac.hmac rejects undersized output buffer" {
+    // EVP_MAC_final takes out.len as capacity; if the buffer is smaller than
+    // the HMAC length it returns 0 → error.OpensslFailure.
+    var tiny: [16]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, Mac.hmac(.sha256, "key", "msg", &tiny));
+}
+
 test "KAT HMAC-SHA256 RFC 4231 Test Case 2 (key=Jefe)" {
     var out: [32]u8 = undefined;
     const n = try Mac.hmac(.sha256, "Jefe", "what do ya want for nothing?", &out);

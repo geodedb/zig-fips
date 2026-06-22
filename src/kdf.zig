@@ -80,6 +80,18 @@ pub const Kdf = struct {
     }
 };
 
+test "Kdf.hkdf rejects output longer than 255*HashLen" {
+    // RFC 5869 §2.3: L <= 255 * HashLen. For SHA-256, max = 255*32 = 8160.
+    // Requesting 8161 bytes must cause EVP_KDF_derive to return 0 → error.OpensslFailure.
+    const a = std.testing.allocator;
+    const too_long = try a.alloc(u8, 255 * 32 + 1);
+    defer a.free(too_long);
+    try std.testing.expectError(
+        error.OpensslFailure,
+        Kdf.hkdf(.sha256, "ikm", "salt1234567890ab", "info", too_long),
+    );
+}
+
 test "KAT HKDF RFC 5869 Test Case 1 (extract+expand)" {
     const ikm = [_]u8{0x0b} ** 22;
     const salt = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c };

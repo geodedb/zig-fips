@@ -186,3 +186,20 @@ test "Stream supports SHA-3 (incremental == one-shot SHA3-256)" {
     _ = try Hash.digest(.sha3_256, msg, &oneshot);
     try std.testing.expectEqualSlices(u8, oneshot[0..n], streamed[0..n]);
 }
+
+test "Hash.digest with correctly-sized buffer succeeds (no overrun path)" {
+    // The production digest() passes out.ptr directly to EVP_DigestFinal_ex
+    // without an out.len guard. Passing a too-small buffer would cause UB, not
+    // error.OpensslFailure, so the negative guard belongs in a future wave's
+    // production fix (Task 1 hardening). This test exercises the happy path
+    // with exact-sized buffers to serve as a regression anchor.
+    var out32: [32]u8 = undefined;
+    const n = try Hash.digest(.sha256, "probe", &out32);
+    try std.testing.expectEqual(@as(usize, 32), n);
+    var out48: [48]u8 = undefined;
+    const n48 = try Hash.digest(.sha384, "probe", &out48);
+    try std.testing.expectEqual(@as(usize, 48), n48);
+    var out64: [64]u8 = undefined;
+    const n64 = try Hash.digest(.sha512, "probe", &out64);
+    try std.testing.expectEqual(@as(usize, 64), n64);
+}

@@ -15,15 +15,14 @@ const std = @import("std");
 pub const policy = @import("policy.zig");
 
 fn randomBytes(out: []u8) void {
-    // Linux getrandom syscall; the non-fips shim's CSPRNG.
+    // Non-fips shim CSPRNG: portable OS entropy via std.posix.system,
+    // cross-platform (Linux/macOS/Windows). The FIPS backend uses the
+    // validated DRBG instead (src/csprng.zig).
     var off: usize = 0;
     while (off < out.len) {
-        const rc = std.os.linux.getrandom(out.ptr + off, out.len - off, 0);
+        const rc = std.posix.system.getrandom(out.ptr + off, out.len - off, 0);
         const n: isize = @bitCast(rc);
-        if (n < 0) {
-            // EINTR/EAGAIN: retry; anything else: fall back to a re-seed.
-            continue;
-        }
+        if (n < 0) continue; // EINTR/EAGAIN: retry
         off += @intCast(n);
     }
 }

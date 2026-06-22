@@ -647,6 +647,15 @@ test "ML-DSA-44 and ML-DSA-87 sign->verify + tamper" {
     }
 }
 
+test "ECDSA P-521 sign->verify + tamper" {
+    var kp = try Sig.generate(.ecdsa_p521);
+    defer kp.deinit();
+    var sig: [180]u8 = undefined;
+    const n = try Sig.sign(.ecdsa_p521, &kp, "p521 msg", &sig);
+    try Sig.verify(.ecdsa_p521, &kp, "p521 msg", sig[0..n]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verify(.ecdsa_p521, &kp, "x", sig[0..n]));
+}
+
 test "SLH-DSA all 12 variants sign->verify + tamper" {
     const variants = [_]policy.SigAlg{
         .slh_dsa_sha2_128s,  .slh_dsa_sha2_128f,  .slh_dsa_sha2_192s,  .slh_dsa_sha2_192f,

@@ -93,3 +93,25 @@ test "EncapResult is the pinned named type" {
         _ = Kem.EncapResult;
     }
 }
+
+test "all KEM variants encap/decap agree" {
+    const util = @import("util.zig");
+    const algs = [_]policy.KemAlg{
+        .ml_kem_512,           .ml_kem_1024,           .x448_ml_kem_1024,
+        .secp256r1_ml_kem_768, .secp384r1_ml_kem_1024,
+    };
+    for (algs) |alg| {
+        var kp = try Kem.generate(alg);
+        defer kp.deinit();
+        var ct: [4096]u8 = undefined;
+        // 128 bytes accommodates all hybrid combined secrets
+        // (largest: X448=56 + ML-KEM-1024=32 = 88 bytes).
+        var ss_a: [128]u8 = undefined;
+        var ss_b: [128]u8 = undefined;
+        defer util.secureZero(&ss_a);
+        defer util.secureZero(&ss_b);
+        const e = try Kem.encapsulate(alg, &kp, &ct, &ss_a);
+        const d = try Kem.decapsulate(alg, &kp, ct[0..e.ct_len], &ss_b);
+        try std.testing.expect(util.timingSafeEql(ss_a[0..e.ss_len], ss_b[0..d]));
+    }
+}

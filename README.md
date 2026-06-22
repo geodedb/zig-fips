@@ -32,8 +32,8 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .fips = .{
-        .url = "git+https://gitlab.com/devnw/zig/fips#v0.1.0",
-        .hash = "<zig-fetch-computed-hash>",
+        .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.0",
+        .hash = "fips-0.1.0-1wf3nbxWBgAp6yAk6cPRrF5l_U1tbblcVcN9xcjJDddy",
         .lazy = true,  // only fetched when -Dfips=true
     },
 },

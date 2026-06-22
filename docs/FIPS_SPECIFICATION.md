@@ -186,20 +186,18 @@ published; they are tracked here so no consumer is left on a temporary
 local dependency or a non-portable code path.
 
 1. **Swap every consumer's local `.path fips`/`tls` dep to lazy
-   `git+https` once published.** Today consumers depend on `fips` (and,
-   for PQC consumers, `tls`) via a local `.path` entry in
-   `build.zig.zon` so the workspace builds in lockstep before anything is
-   tagged. Follow-up, once `fips` and `tls` are tagged + published to
-   `gitlab.com/devnw/zig/{fips,tls}`:
-   - For each consumer, replace `.fips = .{ .path = "../fips", .lazy =
-     true }` with the `git+https` form pinned to the published `#v<X.Y.Z>`
-     tag plus the `zig fetch`-computed `.hash`, keeping `.lazy = true`.
-   - Do the same for PQC consumers' `.tls` dependency.
-   - Re-run `make test-dual` per consumer to confirm the lazy fetch
-     resolves and both backends stay green.
-   - Order: publish `fips` first (it has no workspace deps), then `tls`
-     (depends on `fips`), then fan out the swap to the remaining
-     consumers in dependency order.
+   `git+https` once published.**
+   - **`fips` — DONE (v0.1.0, 2026-06-22).** `fips` is tagged `v0.1.0` and
+     published **public** at `gitlab.com/devnw/zig/fips`. Every consumer that
+     wired the seam now pins the lazy `git+https` form
+     `git+https://gitlab.com/devnw/zig/fips.git#v0.1.0` with
+     `.hash = "fips-0.1.0-1wf3nbxWBgAp6yAk6cPRrF5l_U1tbblcVcN9xcjJDddy"`,
+     `.lazy = true` (each verified with `zig build --fetch`): auth, dns,
+     encrypted-fs, fle, fts-storage, grpc-zig, hsm, mcp, oauth, oidc, quic,
+     timeseries-storage, tls, uuid, wal, wireguard, zign, zlint.
+   - **`tls` — still pending its own tag.** PQC consumers (quic, wireguard,
+     …) keep their local `.path` `tls` dependency until `tls` is tagged +
+     published, then swap `.tls` to the `git+https` form the same way.
    This is a mechanical, per-repo follow-up; it does not change any
    algorithm or seam behavior.
 

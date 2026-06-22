@@ -66,3 +66,4 @@ zig-*/
 *.key
 *.p12
 *.pfx
+.superpowers/

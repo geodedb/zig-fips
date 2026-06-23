@@ -290,6 +290,51 @@ test "shim verifyEcdsa rejects P-521 / SHA-3 / RSA as Unsupported" {
     try std.testing.expectError(error.Unsupported, shim.Sig.verifyEcdsa(.ecdsa_p256, .sha3_256, &kp, "m", "s"));
     try std.testing.expectError(error.Unsupported, shim.Sig.verifyEcdsa(.rsa_pss, .sha256, &kp, "m", "s"));
 }
+test "shim ecPublicPoint exports compressed SEC1 for P-256 (33B) and P-384 (49B)" {
+    // For each curve: generate a keypair, call ecPublicPoint, verify size
+    // and 0x02/0x03 prefix, re-import via fromEcPublicPoint, sign with
+    // the original key, verify with the re-imported public key.
+    inline for (.{
+        .{ shim.policy.SigAlg.ecdsa_p256, @as(usize, 33) },
+        .{ shim.policy.SigAlg.ecdsa_p384, @as(usize, 49) },
+    }) |t| {
+        const alg = t[0];
+        const expected_len = t[1];
+
+        var kp = try shim.Sig.generate(alg);
+        defer kp.deinit();
+
+        // Export compressed point.
+        var point_buf: [49]u8 = undefined;
+        const plen = try kp.ecPublicPoint(alg, &point_buf);
+        try std.testing.expectEqual(expected_len, plen);
+        try std.testing.expect(point_buf[0] == 0x02 or point_buf[0] == 0x03);
+
+        // Re-import the compressed point and verify a signature.
+        var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(alg, point_buf[0..plen]);
+        defer pub_kp.deinit();
+
+        const msg = "shim ecPublicPoint compressed SEC1 export";
+        var sig_buf: [128]u8 = undefined;
+        const n = try shim.Sig.sign(alg, &kp, msg, &sig_buf);
+        try shim.Sig.verify(alg, &pub_kp, msg, sig_buf[0..n]);
+        try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(alg, &pub_kp, "tampered", sig_buf[0..n]));
+    }
+}
+
+test "shim ecPublicPoint rejects non-EC algs and short output buffers" {
+    var ed_kp = try shim.Sig.generate(.ed25519);
+    defer ed_kp.deinit();
+    var buf49: [49]u8 = undefined;
+    try std.testing.expectError(error.Unsupported, ed_kp.ecPublicPoint(.ed25519, &buf49));
+
+    // Buffer too short returns OpensslFailure.
+    var ec_kp = try shim.Sig.generate(.ecdsa_p256);
+    defer ec_kp.deinit();
+    var buf16: [16]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, ec_kp.ecPublicPoint(.ecdsa_p256, &buf16));
+}
+
 test "shim assertActive is a no-op" {
     shim.assertActive(); // must not panic when fips is off
 }

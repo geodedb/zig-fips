@@ -235,8 +235,15 @@ test "shim fromEcPublicPoint accepts an uncompressed SEC1 point" {
     try std.testing.expectEqual(@as(u8, 0x04), point[0]);
     var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, &point);
     defer pub_kp.deinit();
-    const sig = try ref.sign("uncompressed", null);
-    try shim.Sig.verify(.ecdsa_p256, &pub_kp, "uncompressed", &sig.toBytes());
+    // sign via the seam so the output is DER (matching the updated seam contract).
+    var der_buf: [128]u8 = undefined;
+    var seam_kp = try shim.Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, &point);
+    defer seam_kp.deinit();
+    // Use a fresh signing keypair from the same scalar so we get a DER sig.
+    var priv_kp = try shim.Sig.KeyPair.fromEcPrivateScalar(.ecdsa_p256, &ref.secret_key.toBytes());
+    defer priv_kp.deinit();
+    const n = try shim.Sig.sign(.ecdsa_p256, &priv_kp, "uncompressed", &der_buf);
+    try shim.Sig.verify(.ecdsa_p256, &pub_kp, "uncompressed", der_buf[0..n]);
 }
 
 test "shim fromEcPublicPoint / fromEcPrivateScalar reject non-P256/384 algs" {
@@ -276,11 +283,15 @@ test "shim verifyEcdsa off-diagonal P-256/SHA-384 routes via std" {
     var seed: [Scheme.KeyPair.seed_length]u8 = undefined;
     try shim.Csprng.bytes(&seed);
     const okp = try Scheme.KeyPair.generateDeterministic(seed);
-    const sig = try okp.sign(msg, null);
+    const raw_sig = try okp.sign(msg, null);
+    // Convert the raw r||s signature to DER so verifyEcdsa (which now
+    // expects DER matching the FIPS backend contract) can parse it.
+    var der_buf: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
+    const der = raw_sig.toDer(&der_buf);
     var shim_pk = try shim.Sig.KeyPair.fromPublicBytes(.ecdsa_p256, &okp.public_key.toCompressedSec1());
     defer shim_pk.deinit();
-    try shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, msg, &sig.toBytes());
-    try std.testing.expectError(error.VerifyFailed, shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, "tampered", &sig.toBytes()));
+    try shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, msg, der);
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verifyEcdsa(.ecdsa_p256, .sha384, &shim_pk, "tampered", der));
     _ = pn;
 }
 test "shim verifyEcdsa rejects P-521 / SHA-3 / RSA as Unsupported" {
@@ -436,4 +447,77 @@ test "shim timingSafeEql matches on equal, differs on any byte or length" {
     const b = [_]u8{ 1, 2, 3, 5 };
     try std.testing.expect(!shim.timingSafeEql(&a, &b));
     try std.testing.expect(!shim.timingSafeEql(&a, a[0..3]));
+}
+
+// -------------------------------------------------------------------------
+// DER parity: ECDSA sign/verify must use DER on the std_shim backend,
+// matching the FIPS/OpenSSL backend contract (EVP_DigestSign / EVP_DigestVerify
+// both produce and consume ASN.1 DER-encoded SEQUENCE { INTEGER r, INTEGER s }).
+//
+// This test proves three things:
+//   1. sign() emits DER (first byte 0x30, variable length ≤ der_encoded_length_max).
+//   2. verify() accepts the DER that sign() emits (round-trip).
+//   3. verify() rejects raw r||s bytes (proving it is NOT raw-compatible).
+//
+// A consumer (e.g. geode) that calls DER→raw conversion before verifying
+// under the FIPS backend must work identically under the shim backend,
+// because both backends now use DER as the canonical wire format.
+// -------------------------------------------------------------------------
+test "shim ECDSA P-256 sign emits DER and verify accepts it (parity with FIPS backend)" {
+    const P256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    var kp = try shim.Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+
+    const msg = "cross-backend DER parity P-256";
+    var sig_buf: [128]u8 = undefined;
+    const n = try shim.Sig.sign(.ecdsa_p256, &kp, msg, &sig_buf);
+    const der = sig_buf[0..n];
+
+    // 1. First byte of a DER SEQUENCE is 0x30.
+    try std.testing.expectEqual(@as(u8, 0x30), der[0]);
+    // 2. Length is within the DER max (72 bytes for P-256).
+    try std.testing.expect(n <= P256.Signature.der_encoded_length_max);
+    // 3. Verify accepts the DER output.
+    try shim.Sig.verify(.ecdsa_p256, &kp, msg, der);
+    // 4. Tampered message is rejected.
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(.ecdsa_p256, &kp, "tampered", der));
+    // 5. Raw r||s is rejected (proves we are NOT in raw mode).
+    const raw_sig = try P256.KeyPair.generateDeterministic(
+        blk: {
+            var seed: [P256.KeyPair.seed_length]u8 = undefined;
+            try shim.Csprng.bytes(&seed);
+            break :blk seed;
+        },
+    );
+    const raw_bytes = (try raw_sig.sign(msg, null)).toBytes();
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(.ecdsa_p256, &kp, msg, &raw_bytes));
+}
+
+test "shim ECDSA P-384 sign emits DER and verify accepts it (parity with FIPS backend)" {
+    const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
+    var kp = try shim.Sig.generate(.ecdsa_p384);
+    defer kp.deinit();
+
+    const msg = "cross-backend DER parity P-384";
+    var sig_buf: [128]u8 = undefined;
+    const n = try shim.Sig.sign(.ecdsa_p384, &kp, msg, &sig_buf);
+    const der = sig_buf[0..n];
+
+    // 1. First byte of a DER SEQUENCE is 0x30.
+    try std.testing.expectEqual(@as(u8, 0x30), der[0]);
+    // 2. Length is within the DER max (104 bytes for P-384).
+    try std.testing.expect(n <= P384.Signature.der_encoded_length_max);
+    // 3. Round-trip verify.
+    try shim.Sig.verify(.ecdsa_p384, &kp, msg, der);
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(.ecdsa_p384, &kp, "tampered", der));
+    // 4. Raw r||s (96 bytes) is rejected.
+    const raw_sig = try P384.KeyPair.generateDeterministic(
+        blk: {
+            var seed: [P384.KeyPair.seed_length]u8 = undefined;
+            try shim.Csprng.bytes(&seed);
+            break :blk seed;
+        },
+    );
+    const raw_bytes = (try raw_sig.sign(msg, null)).toBytes();
+    try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(.ecdsa_p384, &kp, msg, &raw_bytes));
 }

@@ -453,12 +453,26 @@ pub const Sig = struct {
 
     pub fn sign(alg: policy.SigAlg, kp: *KeyPair, msg: []const u8, sig_out: []u8) Error!usize {
         _ = alg;
-        return switch (kp.inner) {
-            .ed25519 => |k| copyOut(sig_out, &(k.sign(msg, null) catch return error.OpensslFailure).toBytes()),
-            .p256 => |k| copyOut(sig_out, &(k.sign(msg, null) catch return error.OpensslFailure).toBytes()),
-            .p384 => |k| copyOut(sig_out, &(k.sign(msg, null) catch return error.OpensslFailure).toBytes()),
-            else => error.Unsupported, // public-only keys cannot sign
-        };
+        switch (kp.inner) {
+            .ed25519 => |k| return copyOut(sig_out, &(k.sign(msg, null) catch return error.OpensslFailure).toBytes()),
+            // ECDSA: emit DER-encoded SEQUENCE { INTEGER r, INTEGER s } to
+            // match the FIPS/OpenSSL backend (EVP_DigestSign outputs DER).
+            // toDer writes into a fixed-size stack buffer and returns a
+            // sub-slice whose length is the actual (variable) DER length.
+            .p256 => |k| {
+                const raw_sig = k.sign(msg, null) catch return error.OpensslFailure;
+                var der_buf: [P256.Signature.der_encoded_length_max]u8 = undefined;
+                const der = raw_sig.toDer(&der_buf);
+                return copyOut(sig_out, der);
+            },
+            .p384 => |k| {
+                const raw_sig = k.sign(msg, null) catch return error.OpensslFailure;
+                var der_buf: [P384.Signature.der_encoded_length_max]u8 = undefined;
+                const der = raw_sig.toDer(&der_buf);
+                return copyOut(sig_out, der);
+            },
+            else => return error.Unsupported, // public-only keys cannot sign
+        }
     }
 
     pub fn verify(alg: policy.SigAlg, kp: *KeyPair, msg: []const u8, sig: []const u8) Error!void {
@@ -533,8 +547,8 @@ pub const Sig = struct {
 
     fn verifyEcExplicit(comptime S: type, sec1_pk: []const u8, msg: []const u8, sig: []const u8) Error!void {
         const pk = S.PublicKey.fromSec1(sec1_pk) catch return error.OpensslFailure;
-        if (sig.len != S.Signature.encoded_length) return error.VerifyFailed;
-        const s = S.Signature.fromBytes(sig[0..S.Signature.encoded_length].*);
+        // Parse DER (same contract as verifyEc and sign).
+        const s = S.Signature.fromDer(sig) catch return error.VerifyFailed;
         s.verify(msg, pk) catch return error.VerifyFailed;
     }
 
@@ -543,8 +557,9 @@ pub const Sig = struct {
         s.verify(msg, pk) catch return error.VerifyFailed;
     }
     fn verifyEc(comptime S: type, pk: S.PublicKey, msg: []const u8, sig: []const u8) Error!void {
-        if (sig.len != S.Signature.encoded_length) return error.VerifyFailed;
-        const s = S.Signature.fromBytes(sig[0..S.Signature.encoded_length].*);
+        // Expect DER-encoded SEQUENCE { INTEGER r, INTEGER s }, matching what
+        // sign() now emits and what the FIPS/OpenSSL backend produces.
+        const s = S.Signature.fromDer(sig) catch return error.VerifyFailed;
         s.verify(msg, pk) catch return error.VerifyFailed;
     }
 };

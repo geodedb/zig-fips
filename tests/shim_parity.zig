@@ -123,6 +123,20 @@ test "shim HMAC-SHA256 matches RFC 4231 Test Case 2" {
     };
     try std.testing.expectEqualSlices(u8, &expect, &out);
 }
+test "shim KAT HMAC-SHA1 RFC 2202 Test Case 2 (key=Jefe)" {
+    var out: [20]u8 = undefined;
+    const n = try shim.Mac.hmacSha1("Jefe", "what do ya want for nothing?", &out);
+    try std.testing.expectEqual(@as(usize, 20), n);
+    const expect = [_]u8{
+        0xef, 0xfc, 0xdf, 0x6a, 0xe5, 0xeb, 0x2f, 0xa2, 0xd2, 0x74,
+        0x16, 0xd5, 0xf1, 0x84, 0xdf, 0x9c, 0x25, 0x9a, 0x7c, 0x79,
+    };
+    try std.testing.expectEqualSlices(u8, &expect, &out);
+}
+test "shim hmacSha1 rejects undersized output buffer" {
+    var tiny: [19]u8 = undefined;
+    try std.testing.expectError(error.OpensslFailure, shim.Mac.hmacSha1("key", "msg", &tiny));
+}
 test "shim AES-256-GCM round-trip + tamper detect" {
     const key = [_]u8{0x42} ** 32;
     const iv = [_]u8{0x24} ** 12;

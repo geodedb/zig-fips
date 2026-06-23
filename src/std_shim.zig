@@ -132,6 +132,20 @@ pub const Mac = struct {
             .sha3_512 => return one(std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_512), key, msg, out),
         }
     }
+
+    /// HMAC-SHA1 for RFC 6238 TOTP / RFC 4226 HOTP consumers.
+    ///
+    /// SHA-1 is barred from the `policy.Hash` enum (bare SHA-1 is not an
+    /// approved digest for new hashing or signing), but HMAC-SHA1 IS an
+    /// approved MAC (SP 800-131A Rev 2 Table 7; FIPS 198-1). This dedicated
+    /// function is the ONLY approved path to SHA-1 inside the seam — do NOT
+    /// add `sha1` to policy.Hash.
+    ///
+    /// `out` must be ≥ 20 bytes. Writes exactly 20 bytes; returns 20.
+    pub fn hmacSha1(key: []const u8, msg: []const u8, out: []u8) Error!usize {
+        return one(std.crypto.auth.hmac.HmacSha1, key, msg, out);
+    }
+
     fn one(comptime M: type, key: []const u8, msg: []const u8, out: []u8) Error!usize {
         var t: [M.mac_length]u8 = undefined;
         M.create(&t, msg, key);

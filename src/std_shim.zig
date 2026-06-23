@@ -23,7 +23,7 @@ fn randomBytes(out: []u8) error{OpensslFailure}!void {
     while (off < out.len) {
         const rc = std.posix.system.getrandom(out.ptr + off, out.len - off, 0);
         switch (std.posix.errno(rc)) {
-            .SUCCESS => off += rc, // rc = bytes filled on success
+            .SUCCESS => off += @intCast(rc), // rc is isize bytes-filled on success; non-negative here
             .INTR => continue, // interrupted by a signal; retry
             else => return error.OpensslFailure, // fatal: fail closed, never loop or fall back
         }
@@ -287,10 +287,11 @@ pub const Sig = struct {
 
         pub fn fromPrivateBytes(alg: policy.SigAlg, raw: []const u8) Error!KeyPair {
             return switch (alg) {
-                .ed25519 => blk: {
-                    const sk = Ed25519.SecretKey.fromBytes(toArr(64, raw) catch return error.OpensslFailure) catch return error.OpensslFailure;
-                    break :blk .{ .inner = .{ .ed25519 = Ed25519.KeyPair.fromSecretKey(sk) catch return error.OpensslFailure } };
-                },
+                // Ed25519 private key is the 32-byte SEED (matching the
+                // FIPS backend's EVP_PKEY_new_raw_private_key_ex, which also
+                // takes the 32-byte seed, and geode's stored seed format).
+                // Rebuild the full keypair deterministically from the seed.
+                .ed25519 => .{ .inner = .{ .ed25519 = Ed25519.KeyPair.generateDeterministic(toArr(Ed25519.KeyPair.seed_length, raw) catch return error.OpensslFailure) catch return error.OpensslFailure } },
                 .ecdsa_p256 => blk: {
                     const sk = P256.SecretKey.fromBytes(toArr(P256.SecretKey.encoded_length, raw) catch return error.OpensslFailure) catch return error.OpensslFailure;
                     break :blk .{ .inner = .{ .p256 = P256.KeyPair.fromSecretKey(sk) catch return error.OpensslFailure } };
@@ -300,6 +301,43 @@ pub const Sig = struct {
                     break :blk .{ .inner = .{ .p384 = P384.KeyPair.fromSecretKey(sk) catch return error.OpensslFailure } };
                 },
                 else => error.Unsupported,
+            };
+        }
+
+        /// Import an EC public key from a raw SEC1 point (compressed OR
+        /// uncompressed; std's `fromSec1` decodes both). Only
+        /// `.ecdsa_p256`/`.ecdsa_p384` are supported here (P-521 is
+        /// fips-only in the shim). Mirrors the FIPS backend surface so
+        /// geode's raw compressed points import under both -Dfips.
+        pub fn fromEcPublicPoint(alg: policy.SigAlg, point: []const u8) Error!KeyPair {
+            return switch (alg) {
+                .ecdsa_p256 => .{ .inner = .{ .p256_pub = (P256.PublicKey.fromSec1(point) catch return error.OpensslFailure) } },
+                .ecdsa_p384 => .{ .inner = .{ .p384_pub = (P384.PublicKey.fromSec1(point) catch return error.OpensslFailure) } },
+                else => error.Unsupported, // P-521 is fips-only in the shim
+            };
+        }
+
+        /// Import an EC private key from the raw big-endian private scalar
+        /// (32B P-256 / 48B P-384). Only `.ecdsa_p256`/`.ecdsa_p384`.
+        /// Mirrors the FIPS backend surface; the resulting keypair signs
+        /// and verifies. std derives the public key from the scalar.
+        /// Import an EC private key from a raw big-endian scalar.
+        /// CONTRACT: `scalar` must be FIXED-WIDTH for the curve (32 bytes for
+        /// P-256, 48 for P-384). This shim rejects shorter inputs (e.g. a
+        /// leading-zero-stripped scalar) with `error.OpensslFailure`. The FIPS
+        /// backend's `BN_bin2bn` accepts variable-length scalars, so callers
+        /// must store/pass fixed-width scalars for cross-backend parity.
+        pub fn fromEcPrivateScalar(alg: policy.SigAlg, scalar: []const u8) Error!KeyPair {
+            return switch (alg) {
+                .ecdsa_p256 => blk: {
+                    const sk = P256.SecretKey.fromBytes(toArr(P256.SecretKey.encoded_length, scalar) catch return error.OpensslFailure) catch return error.OpensslFailure;
+                    break :blk .{ .inner = .{ .p256 = P256.KeyPair.fromSecretKey(sk) catch return error.OpensslFailure } };
+                },
+                .ecdsa_p384 => blk: {
+                    const sk = P384.SecretKey.fromBytes(toArr(P384.SecretKey.encoded_length, scalar) catch return error.OpensslFailure) catch return error.OpensslFailure;
+                    break :blk .{ .inner = .{ .p384 = P384.KeyPair.fromSecretKey(sk) catch return error.OpensslFailure } };
+                },
+                else => error.Unsupported, // P-521 is fips-only in the shim
             };
         }
 

@@ -28,8 +28,28 @@ test "seam selects std_shim when fips=false and exposes the API" {
         _ = backend.Kem.EncapResult;
         _ = backend.Sig.KeyPair;
         _ = backend.policy.Hash;
+        // The whole-Sig re-export reaches the raw-EC import constructors
+        // (geode routes ECDSA signing through these under -Dfips).
+        std.debug.assert(@hasDecl(backend.Sig.KeyPair, "fromEcPublicPoint"));
+        std.debug.assert(@hasDecl(backend.Sig.KeyPair, "fromEcPrivateScalar"));
         // HashStream alias and the nested type are the same type.
         std.debug.assert(backend.HashStream == backend.Hash.Stream);
+    }
+
+    // The raw-EC import constructors are callable THROUGH the seam: derive
+    // a P-256 std keypair, import scalar + point via the seam, sign, verify.
+    {
+        const S = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+        var seed: [S.KeyPair.seed_length]u8 = undefined;
+        try backend.Csprng.bytes(&seed);
+        const ref = try S.KeyPair.generateDeterministic(seed);
+        var priv_kp = try backend.Sig.KeyPair.fromEcPrivateScalar(.ecdsa_p256, &ref.secret_key.toBytes());
+        defer priv_kp.deinit();
+        var pub_kp = try backend.Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, &ref.public_key.toCompressedSec1());
+        defer pub_kp.deinit();
+        var sig: [80]u8 = undefined;
+        const sn = try backend.Sig.sign(.ecdsa_p256, &priv_kp, "seam raw-ec", &sig);
+        try backend.Sig.verify(.ecdsa_p256, &pub_kp, "seam raw-ec", sig[0..sn]);
     }
     // Parity: secureZero, timingSafeEql, ensureFips are exported from the seam template.
     comptime {

@@ -169,6 +169,85 @@ test "shim ECDSA P-256 sign->verify round trip" {
     const n = try shim.Sig.sign(.ecdsa_p256, &kp, "hello", &sig);
     try shim.Sig.verify(.ecdsa_p256, &kp, "hello", sig[0..n]);
 }
+test "shim Ed25519 fromPrivateBytes accepts a 32-byte seed and signs" {
+    // geode stores the 32-byte Ed25519 SEED (not the 64-byte expanded
+    // key). Build a std keypair from a known seed, import the SAME seed
+    // through the seam, and confirm both produce verifiable signatures
+    // over the same message (i.e. the seam rebuilt the identical key).
+    const Ed = std.crypto.sign.Ed25519;
+    var seed: [Ed.KeyPair.seed_length]u8 = undefined; // 32 bytes
+    try shim.Csprng.bytes(&seed);
+    const ref = try Ed.KeyPair.generateDeterministic(seed);
+
+    var seam_kp = try shim.Sig.KeyPair.fromPrivateBytes(.ed25519, &seed);
+    defer seam_kp.deinit();
+
+    const msg = "ed25519 seed import";
+    var sig: [64]u8 = undefined;
+    const n = try shim.Sig.sign(.ed25519, &seam_kp, msg, &sig);
+    try std.testing.expectEqual(@as(usize, 64), n);
+    // The seam-imported key's public half must equal the reference key's.
+    var seam_pub: [32]u8 = undefined;
+    const pn = try seam_kp.publicBytes(&seam_pub);
+    try std.testing.expectEqualSlices(u8, &ref.public_key.toBytes(), seam_pub[0..pn]);
+    // And the reference key verifies the seam-produced signature.
+    const s = Ed.Signature.fromBytes(sig[0..64].*);
+    try s.verify(msg, ref.public_key);
+}
+
+test "shim fromEcPublicPoint + fromEcPrivateScalar round-trip P-256 and P-384" {
+    // For each curve: derive a std keypair, export its raw scalar +
+    // compressed SEC1 point, import each through the seam, sign with the
+    // scalar-imported key, verify with the point-imported key.
+    inline for (.{
+        .{ shim.policy.SigAlg.ecdsa_p256, std.crypto.sign.ecdsa.EcdsaP256Sha256 },
+        .{ shim.policy.SigAlg.ecdsa_p384, std.crypto.sign.ecdsa.EcdsaP384Sha384 },
+    }) |t| {
+        const alg = t[0];
+        const S = t[1];
+        var seed: [S.KeyPair.seed_length]u8 = undefined;
+        try shim.Csprng.bytes(&seed);
+        const ref = try S.KeyPair.generateDeterministic(seed);
+
+        const scalar = ref.secret_key.toBytes(); // fixed-width 32B/48B
+        const point = ref.public_key.toCompressedSec1(); // 33B/49B
+
+        var priv_kp = try shim.Sig.KeyPair.fromEcPrivateScalar(alg, &scalar);
+        defer priv_kp.deinit();
+        var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(alg, &point);
+        defer pub_kp.deinit();
+
+        const msg = "shim raw-ec import round-trip";
+        var sig: [128]u8 = undefined;
+        const n = try shim.Sig.sign(alg, &priv_kp, msg, &sig);
+        try shim.Sig.verify(alg, &pub_kp, msg, sig[0..n]);
+        try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(alg, &pub_kp, "tampered", sig[0..n]));
+    }
+}
+
+test "shim fromEcPublicPoint accepts an uncompressed SEC1 point" {
+    // Verify the uncompressed (0x04-prefixed) encoding imports too.
+    const S = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    var seed: [S.KeyPair.seed_length]u8 = undefined;
+    try shim.Csprng.bytes(&seed);
+    const ref = try S.KeyPair.generateDeterministic(seed);
+    const point = ref.public_key.toUncompressedSec1(); // 65 bytes
+    try std.testing.expectEqual(@as(u8, 0x04), point[0]);
+    var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, &point);
+    defer pub_kp.deinit();
+    const sig = try ref.sign("uncompressed", null);
+    try shim.Sig.verify(.ecdsa_p256, &pub_kp, "uncompressed", &sig.toBytes());
+}
+
+test "shim fromEcPublicPoint / fromEcPrivateScalar reject non-P256/384 algs" {
+    const fake_point = [_]u8{0x04} ++ [_]u8{0} ** 64;
+    const fake_scalar = [_]u8{1} ** 32;
+    inline for (.{ shim.policy.SigAlg.ecdsa_p521, shim.policy.SigAlg.ed25519, shim.policy.SigAlg.rsa_pss, shim.policy.SigAlg.ml_dsa_65 }) |alg| {
+        try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromEcPublicPoint(alg, &fake_point));
+        try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromEcPrivateScalar(alg, &fake_scalar));
+    }
+}
+
 test "shim RSA + PQC import report Unsupported (fips-only)" {
     try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromPublicBytes(.rsa_pss, "x"));
     try std.testing.expectError(error.Unsupported, shim.Sig.KeyPair.fromPrivateBytes(.ml_dsa_65, "x"));

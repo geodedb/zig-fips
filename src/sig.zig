@@ -74,6 +74,20 @@ fn ecGroupOid(alg: policy.SigAlg) Sig.Error![:0]const u8 {
     };
 }
 
+/// OpenSSL group name for raw-EC `EVP_PKEY_fromdata` import. Restricted
+/// to the two NIST curves geode stores raw keys for (P-256/P-384); P-521
+/// (and any non-ECDSA alg) is `error.Unsupported` here because the raw
+/// import path is scoped to those two curves. Uses the canonical OID
+/// short names OpenSSL normalises to on read-back, so an imported key's
+/// group compares equal in `verifyEcdsa`'s `ecGroupOid` binding check.
+fn ecImportGroup(alg: policy.SigAlg) Sig.Error![:0]const u8 {
+    return switch (alg) {
+        .ecdsa_p256 => "prime256v1",
+        .ecdsa_p384 => "secp384r1",
+        else => error.Unsupported,
+    };
+}
+
 /// Digest name used for classical (non-PQC) sign/verify. Ed25519 and the
 /// PQC algorithms are one-shot pure modes (no pre-hash).
 fn sigDigest(alg: policy.SigAlg) ?[:0]const u8 {
@@ -192,6 +206,67 @@ pub const Sig = struct {
             errdefer c.EVP_PKEY_free(k);
             try assertRsaStrength(k);
             return .{ .pkey = k };
+        }
+
+        /// Import an EC public key from a raw SEC1 point — the on-the-wire
+        /// elliptic-curve point, compressed (33B P-256 / 49B P-384) OR
+        /// uncompressed (65B / 97B); OpenSSL's EC keymgmt decodes both via
+        /// the `pub` octet-string param. Only `.ecdsa_p256`/`.ecdsa_p384`
+        /// are valid (P-521/RSA/Ed25519/PQC → `error.Unsupported`). Builds
+        /// an `EVP_PKEY` through `EVP_PKEY_fromdata` under the fips lib
+        /// context (mirrors `fromRsaComponents`). The caller owns the
+        /// returned KeyPair (deinit). The result plugs into the existing
+        /// `Sig.verify` / `Sig.verifyEcdsa` paths unchanged.
+        pub fn fromEcPublicPoint(alg: policy.SigAlg, point: []const u8) Error!KeyPair {
+            provider.assertActive();
+            const group = try ecImportGroup(alg);
+
+            const bld = c.OSSL_PARAM_BLD_new() orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_BLD_free(bld);
+            // Group name as a UTF-8 string param; the point as an octet
+            // string. OpenSSL's EC keymgmt parses both SEC1 encodings.
+            if (c.OSSL_PARAM_BLD_push_utf8_string(bld, c.OSSL_PKEY_PARAM_GROUP_NAME, group.ptr, group.len) != 1) return error.OpensslFailure;
+            if (c.OSSL_PARAM_BLD_push_octet_string(bld, c.OSSL_PKEY_PARAM_PUB_KEY, point.ptr, point.len) != 1) return error.OpensslFailure;
+            const params = c.OSSL_PARAM_BLD_to_param(bld) orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_free(params);
+
+            const pctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), "EC", "fips=yes") orelse return error.OpensslFailure;
+            defer c.EVP_PKEY_CTX_free(pctx);
+            if (c.EVP_PKEY_fromdata_init(pctx) != 1) return error.OpensslFailure;
+            var pkey: ?*c.EVP_PKEY = null;
+            if (c.EVP_PKEY_fromdata(pctx, &pkey, c.EVP_PKEY_PUBLIC_KEY, params) != 1) return error.OpensslFailure;
+            return .{ .pkey = pkey orelse return error.OpensslFailure };
+        }
+
+        /// Import an EC private key from the raw big-endian private scalar
+        /// (32B P-256 / 48B P-384). Only `.ecdsa_p256`/`.ecdsa_p384`. The
+        /// scalar is parsed big-endian via `BN_bin2bn`; `OSSL_PARAM_BLD`
+        /// then serialises it into the native param form OpenSSL's EC
+        /// keymgmt expects (no hand-rolled endianness). Builds a KEYPAIR
+        /// `EVP_PKEY` through `EVP_PKEY_fromdata` under the fips lib context
+        /// so the resulting key can both `Sig.sign` and `Sig.verify`.
+        pub fn fromEcPrivateScalar(alg: policy.SigAlg, scalar: []const u8) Error!KeyPair {
+            provider.assertActive();
+            const group = try ecImportGroup(alg);
+
+            const bn_d = c.BN_bin2bn(scalar.ptr, try ffi.toCInt(scalar.len), null) orelse return error.OpensslFailure;
+            defer c.BN_free(bn_d);
+
+            const bld = c.OSSL_PARAM_BLD_new() orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_BLD_free(bld);
+            if (c.OSSL_PARAM_BLD_push_utf8_string(bld, c.OSSL_PKEY_PARAM_GROUP_NAME, group.ptr, group.len) != 1) return error.OpensslFailure;
+            if (c.OSSL_PARAM_BLD_push_BN(bld, c.OSSL_PKEY_PARAM_PRIV_KEY, bn_d) != 1) return error.OpensslFailure;
+            const params = c.OSSL_PARAM_BLD_to_param(bld) orelse return error.OpensslFailure;
+            defer c.OSSL_PARAM_free(params);
+
+            const pctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), "EC", "fips=yes") orelse return error.OpensslFailure;
+            defer c.EVP_PKEY_CTX_free(pctx);
+            if (c.EVP_PKEY_fromdata_init(pctx) != 1) return error.OpensslFailure;
+            var pkey: ?*c.EVP_PKEY = null;
+            // KEYPAIR: from a private scalar OpenSSL's EC keymgmt derives the
+            // matching public point, so the key is usable for sign AND verify.
+            if (c.EVP_PKEY_fromdata(pctx, &pkey, c.EVP_PKEY_KEYPAIR, params) != 1) return error.OpensslFailure;
+            return .{ .pkey = pkey orelse return error.OpensslFailure };
         }
     };
 
@@ -628,6 +703,91 @@ test "ECDSA P-384 with SHA-256 off-diagonal verify routes" {
     var sig: [128]u8 = undefined;
     const n = try ecdsaSignExplicit(.sha256, &kp, msg, &sig);
     try Sig.verifyEcdsa(.ecdsa_p384, .sha256, &kp, msg, sig[0..n]);
+}
+
+test "fromEcPublicPoint + fromEcPrivateScalar round-trip P-256 and P-384" {
+    // For each curve: generate a key, export its raw public point and raw
+    // private scalar, re-import each independently, sign with the
+    // scalar-imported key, and verify with the point-imported key. Proves
+    // the FIPS provider both ACCEPTS raw-EC fromdata and USES the keys.
+    inline for (.{
+        // tuple: (alg, compressed-point-size hint, scalar byte width). NB: this
+        // round-trip exports the UNCOMPRESSED point via publicBytes; the
+        // compressed SEC1 form has its own dedicated test below.
+        .{ policy.SigAlg.ecdsa_p256, @as(usize, 33), @as(usize, 32) },
+        .{ policy.SigAlg.ecdsa_p384, @as(usize, 49), @as(usize, 48) },
+    }) |t| {
+        const alg = t[0];
+        var kp = try Sig.generate(alg);
+        defer kp.deinit();
+
+        // Export the uncompressed public point (OSSL_PKEY_PARAM_PUB_KEY is
+        // the uncompressed SEC1 octet string; OpenSSL decodes it back fine).
+        var point_buf: [97]u8 = undefined;
+        var point_len: usize = 0;
+        try std.testing.expect(c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_PUB_KEY, &point_buf, point_buf.len, &point_len) == 1);
+        try std.testing.expect(point_len > 0);
+
+        // Export the private scalar (big-endian) via the priv BIGNUM.
+        var bn_d: ?*c.BIGNUM = null;
+        try std.testing.expect(c.EVP_PKEY_get_bn_param(kp.pkey, c.OSSL_PKEY_PARAM_PRIV_KEY, &bn_d) == 1);
+        defer c.BN_free(bn_d);
+        var scalar_buf: [48]u8 = undefined;
+        const scalar_len = c.BN_bn2bin(bn_d, &scalar_buf);
+        try std.testing.expect(scalar_len > 0);
+
+        var pub_kp = try Sig.KeyPair.fromEcPublicPoint(alg, point_buf[0..point_len]);
+        defer pub_kp.deinit();
+        var priv_kp = try Sig.KeyPair.fromEcPrivateScalar(alg, scalar_buf[0..@intCast(scalar_len)]);
+        defer priv_kp.deinit();
+
+        const msg = "raw-ec import round-trip";
+        var sig: [128]u8 = undefined;
+        const n = try Sig.sign(alg, &priv_kp, msg, &sig);
+        // Verify with the point-imported (public-only) key.
+        try Sig.verify(alg, &pub_kp, msg, sig[0..n]);
+        try std.testing.expectError(error.VerifyFailed, Sig.verify(alg, &pub_kp, "tampered", sig[0..n]));
+
+        // The point-imported key carries the correct group, so the explicit
+        // verifyEcdsa binding check also accepts it on the natural digest.
+        const dg: policy.Hash = if (alg == .ecdsa_p256) .sha256 else .sha384;
+        try Sig.verifyEcdsa(alg, dg, &pub_kp, msg, sig[0..n]);
+    }
+}
+
+test "fromEcPublicPoint accepts a compressed SEC1 point" {
+    // Generate P-256, export the COMPRESSED point (33 bytes), and confirm
+    // the import path decodes the compressed encoding (not just uncompressed).
+    var kp = try Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+
+    // Ask OpenSSL to format the public key compressed, then read it back.
+    var fmt = [_]c.OSSL_PARAM{
+        c.OSSL_PARAM_construct_utf8_string(c.OSSL_PKEY_PARAM_EC_POINT_CONVERSION_FORMAT, @constCast(@as([:0]const u8, "compressed").ptr), 0),
+        c.OSSL_PARAM_construct_end(),
+    };
+    try std.testing.expect(c.EVP_PKEY_set_params(kp.pkey, &fmt) == 1);
+    var point_buf: [33]u8 = undefined;
+    var point_len: usize = 0;
+    try std.testing.expect(c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_PUB_KEY, &point_buf, point_buf.len, &point_len) == 1);
+    try std.testing.expectEqual(@as(usize, 33), point_len);
+    try std.testing.expect(point_buf[0] == 0x02 or point_buf[0] == 0x03); // compressed prefix
+
+    var pub_kp = try Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, point_buf[0..point_len]);
+    defer pub_kp.deinit();
+    // Sign with the original (full) key, verify with the compressed-imported key.
+    var sig: [80]u8 = undefined;
+    const n = try Sig.sign(.ecdsa_p256, &kp, "compressed point import", &sig);
+    try Sig.verify(.ecdsa_p256, &pub_kp, "compressed point import", sig[0..n]);
+}
+
+test "fromEcPublicPoint / fromEcPrivateScalar reject non-P256/384 algs" {
+    const fake_point = [_]u8{0x04} ++ [_]u8{0} ** 64;
+    const fake_scalar = [_]u8{1} ** 32;
+    inline for (.{ policy.SigAlg.ecdsa_p521, policy.SigAlg.ed25519, policy.SigAlg.rsa_pss, policy.SigAlg.ml_dsa_65 }) |alg| {
+        try std.testing.expectError(error.Unsupported, Sig.KeyPair.fromEcPublicPoint(alg, &fake_point));
+        try std.testing.expectError(error.Unsupported, Sig.KeyPair.fromEcPrivateScalar(alg, &fake_scalar));
+    }
 }
 
 test "verifyEcdsa rejects RSA alg and non-SHA-2 digest as Unsupported" {

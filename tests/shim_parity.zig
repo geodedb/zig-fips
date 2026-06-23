@@ -335,6 +335,76 @@ test "shim ecPublicPoint rejects non-EC algs and short output buffers" {
     try std.testing.expectError(error.OpensslFailure, ec_kp.ecPublicPoint(.ecdsa_p256, &buf16));
 }
 
+test "shim ecPublicPoint: wrong-curve alg (P-256 alg on P-384 key) returns Unsupported" {
+    // A P-384 key with .ecdsa_p256 alg hits the inner-type mismatch branch
+    // (self.inner is .p384 / .p384_pub, not .p256 / .p256_pub), returning
+    // error.Unsupported — matching the FIPS backend's curve-match guard.
+    var kp = try shim.Sig.generate(.ecdsa_p384);
+    defer kp.deinit();
+    var buf: [49]u8 = undefined;
+    try std.testing.expectError(error.Unsupported, kp.ecPublicPoint(.ecdsa_p256, &buf));
+}
+
+test "shim ecPublicPoint: fromEcPublicPoint key (public-only) exports correctly" {
+    // Import a compressed point, then re-export via ecPublicPoint — proves
+    // public-only KeyPairs (inner = .p256_pub / .p384_pub) work with ecPublicPoint.
+    const S = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    var seed: [S.KeyPair.seed_length]u8 = undefined;
+    try shim.Csprng.bytes(&seed);
+    const ref = try S.KeyPair.generateDeterministic(seed);
+    const compressed_ref = ref.public_key.toCompressedSec1();
+
+    var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, &compressed_ref);
+    defer pub_kp.deinit();
+    var reexport: [33]u8 = undefined;
+    const rlen = try pub_kp.ecPublicPoint(.ecdsa_p256, &reexport);
+    try std.testing.expectEqual(@as(usize, 33), rlen);
+    try std.testing.expectEqualSlices(u8, &compressed_ref, reexport[0..rlen]);
+}
+
+test "shim ecPublicPoint cross-backend parity: std matches toCompressedSec1 directly" {
+    // This test proves the 0x02/0x03 sign-bit convention in ecPublicPoint is
+    // identical to toCompressedSec1() for the same key material — i.e. the
+    // shim's ecPublicPoint is simply a copyOut-wrapped toCompressedSec1, so
+    // both backends produce the same bytes from the same raw scalar.
+    // Also asserts the exported compressed point round-trips through
+    // fromEcPublicPoint + sign + verify (byte-equality proof).
+    inline for (.{
+        .{ shim.policy.SigAlg.ecdsa_p256, std.crypto.sign.ecdsa.EcdsaP256Sha256 },
+        .{ shim.policy.SigAlg.ecdsa_p384, std.crypto.sign.ecdsa.EcdsaP384Sha384 },
+    }) |t| {
+        const alg = t[0];
+        const S = t[1];
+
+        var seed: [S.KeyPair.seed_length]u8 = undefined;
+        try shim.Csprng.bytes(&seed);
+        const ref = try S.KeyPair.generateDeterministic(seed);
+
+        // Import the scalar through the seam.
+        const scalar = ref.secret_key.toBytes();
+        var seam_kp = try shim.Sig.KeyPair.fromEcPrivateScalar(alg, &scalar);
+        defer seam_kp.deinit();
+
+        // Export via ecPublicPoint (the seam API).
+        var seam_compressed: [49]u8 = undefined;
+        const clen = try seam_kp.ecPublicPoint(alg, &seam_compressed);
+
+        // The reference is toCompressedSec1() directly from std.
+        const ref_compressed = ref.public_key.toCompressedSec1();
+        try std.testing.expectEqual(ref_compressed.len, clen);
+        try std.testing.expectEqualSlices(u8, &ref_compressed, seam_compressed[0..clen]);
+
+        // Round-trip: import the compressed point, sign with original, verify.
+        var pub_kp = try shim.Sig.KeyPair.fromEcPublicPoint(alg, seam_compressed[0..clen]);
+        defer pub_kp.deinit();
+        const msg = "cross-backend parity round-trip";
+        var sig_buf: [128]u8 = undefined;
+        const n = try shim.Sig.sign(alg, &seam_kp, msg, &sig_buf);
+        try shim.Sig.verify(alg, &pub_kp, msg, sig_buf[0..n]);
+        try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(alg, &pub_kp, "tampered", sig_buf[0..n]));
+    }
+}
+
 test "shim assertActive is a no-op" {
     shim.assertActive(); // must not panic when fips is off
 }

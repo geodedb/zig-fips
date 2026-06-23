@@ -241,33 +241,49 @@ pub const Sig = struct {
         /// Export the COMPRESSED SEC1 public point for an EC key pair.
         /// Only `.ecdsa_p256` (33 bytes, prefix 0x02/0x03) and
         /// `.ecdsa_p384` (49 bytes) are supported; any other algorithm
-        /// returns `error.Unsupported`. `out` must be at least the
+        /// returns `error.Unsupported`. A non-EC key type (RSA, Ed25519)
+        /// also returns `error.Unsupported`. `out` must be at least the
         /// compressed size (33B / 49B); shorter buffers return
-        /// `error.OpensslFailure`. The point format is set to "compressed"
-        /// on the key object before reading `OSSL_PKEY_PARAM_PUB_KEY`, so
-        /// the returned bytes are always in the compressed SEC1 form.
-        /// No heap allocations; no leaks. The format param is a transient
-        /// attribute on the local `pkey` copy and does not affect callers
-        /// holding their own `EVP_PKEY` pointers.
+        /// `error.OpensslFailure`.
+        ///
+        /// NON-MUTATING: the compressed-format flag is set on a private
+        /// duplicate of `self.pkey` created via `EVP_PKEY_dup`; `self.pkey`
+        /// is NEVER modified, so a subsequent `publicBytes` / uncompressed
+        /// read on the same `KeyPair` still returns the uncompressed form.
         pub fn ecPublicPoint(self: *KeyPair, alg: policy.SigAlg, out: []u8) Error!usize {
             const compressed_len: usize = switch (alg) {
                 .ecdsa_p256 => 33,
                 .ecdsa_p384 => 49,
                 else => return error.Unsupported,
             };
+            // Guard 1: key type must be EC (not RSA, Ed25519, PQC, …).
+            if (c.EVP_PKEY_is_a(self.pkey, "EC") != 1) return error.Unsupported;
+            // Guard 2: the key's stored curve must match the requested alg.
+            // OpenSSL normalises curve names to OID short form on read-back
+            // (e.g. "prime256v1" for P-256), so compare against ecGroupOid.
+            var gname: [32]u8 = undefined;
+            var glen: usize = 0;
+            if (c.EVP_PKEY_get_utf8_string_param(self.pkey, c.OSSL_PKEY_PARAM_GROUP_NAME, &gname, gname.len, &glen) != 1) return error.Unsupported;
+            if (!std.mem.eql(u8, gname[0..glen], try ecGroupOid(alg))) return error.Unsupported;
+            // Buffer-size guard before any write.
             if (out.len < compressed_len) return error.OpensslFailure;
-            // Ask OpenSSL to encode the public point in compressed form
-            // before reading it back. EVP_PKEY_set_params with a UTF-8
-            // string param is the public, documented API; set_utf8_string_param
-            // is a convenience wrapper but EVP_PKEY_set_params is equivalent.
+            // Create a private duplicate so self.pkey is never mutated.
+            const dup = c.EVP_PKEY_dup(self.pkey) orelse return error.OpensslFailure;
+            defer c.EVP_PKEY_free(dup);
+            // Set compressed format on the duplicate only.
             var fmt = [_]c.OSSL_PARAM{
                 c.OSSL_PARAM_construct_utf8_string(c.OSSL_PKEY_PARAM_EC_POINT_CONVERSION_FORMAT, @constCast(@as([:0]const u8, "compressed").ptr), 0),
                 c.OSSL_PARAM_construct_end(),
             };
-            if (c.EVP_PKEY_set_params(self.pkey, &fmt) != 1) return error.OpensslFailure;
+            if (c.EVP_PKEY_set_params(dup, &fmt) != 1) return error.OpensslFailure;
             var point_len: usize = 0;
-            if (c.EVP_PKEY_get_octet_string_param(self.pkey, c.OSSL_PKEY_PARAM_PUB_KEY, out.ptr, out.len, &point_len) != 1) return error.OpensslFailure;
-            if (point_len != compressed_len) return error.OpensslFailure;
+            if (c.EVP_PKEY_get_octet_string_param(dup, c.OSSL_PKEY_PARAM_PUB_KEY, out.ptr, out.len, &point_len) != 1) return error.OpensslFailure;
+            // Defensive: if the returned size is wrong (alg/curve mismatch
+            // slipped through), zero the written bytes before returning an error.
+            if (point_len != compressed_len) {
+                @memset(out[0..compressed_len], 0);
+                return error.OpensslFailure;
+            }
             return point_len;
         }
 
@@ -910,11 +926,73 @@ test "ecPublicPoint rejects non-EC algs and short output buffers" {
     defer rsa_kp.deinit();
     try std.testing.expectError(error.Unsupported, rsa_kp.ecPublicPoint(.rsa_pss, &buf49));
 
+    // RSA key with an EC alg name (the real type-guard path): must return
+    // error.Unsupported, NOT error.OpensslFailure, after the EC-type guard.
+    try std.testing.expectError(error.Unsupported, rsa_kp.ecPublicPoint(.ecdsa_p256, &buf49));
+
     // Buffer too short returns OpensslFailure.
     var ec_kp = try Sig.generate(.ecdsa_p256);
     defer ec_kp.deinit();
     var buf16: [16]u8 = undefined;
     try std.testing.expectError(error.OpensslFailure, ec_kp.ecPublicPoint(.ecdsa_p256, &buf16));
+}
+
+test "ecPublicPoint is non-mutating: publicBytes after ecPublicPoint is unchanged" {
+    // Prove that calling ecPublicPoint (which requests compressed format on a
+    // dup) does NOT alter the original KeyPair's encoding. publicBytes on the
+    // FIPS backend calls EVP_PKEY_get_raw_public_key (Ed25519/PQC) or reads
+    // the uncompressed point; the compressed call must leave self.pkey intact.
+    inline for (.{ policy.SigAlg.ecdsa_p256, policy.SigAlg.ecdsa_p384 }) |alg| {
+        var kp = try Sig.generate(alg);
+        defer kp.deinit();
+
+        // Capture uncompressed public point BEFORE calling ecPublicPoint.
+        var before: [97]u8 = undefined;
+        var before_len: usize = 0;
+        try std.testing.expect(c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_PUB_KEY, &before, before.len, &before_len) == 1);
+        try std.testing.expect(before_len > 0);
+        try std.testing.expectEqual(@as(u8, 0x04), before[0]); // uncompressed prefix
+
+        // Call ecPublicPoint (the operation under test).
+        var compressed: [49]u8 = undefined;
+        const clen = try kp.ecPublicPoint(alg, &compressed);
+        try std.testing.expect(clen == 33 or clen == 49);
+        try std.testing.expect(compressed[0] == 0x02 or compressed[0] == 0x03);
+
+        // Read the public point AFTER ecPublicPoint — must still be uncompressed.
+        var after: [97]u8 = undefined;
+        var after_len: usize = 0;
+        try std.testing.expect(c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_PUB_KEY, &after, after.len, &after_len) == 1);
+        try std.testing.expectEqual(before_len, after_len);
+        try std.testing.expectEqualSlices(u8, before[0..before_len], after[0..after_len]);
+        try std.testing.expectEqual(@as(u8, 0x04), after[0]); // still uncompressed
+    }
+}
+
+test "ecPublicPoint: wrong-curve alg (P-256 alg on P-384 key) returns Unsupported" {
+    // A P-384 key with .ecdsa_p256 alg must return error.Unsupported via the
+    // curve-match guard (not error.OpensslFailure from a bad write).
+    var kp = try Sig.generate(.ecdsa_p384);
+    defer kp.deinit();
+    var buf: [49]u8 = undefined;
+    try std.testing.expectError(error.Unsupported, kp.ecPublicPoint(.ecdsa_p256, &buf));
+}
+
+test "ecPublicPoint: fromEcPublicPoint key (public-only) exports correctly" {
+    // Import a compressed point, then re-export via ecPublicPoint — proves
+    // public-only KeyPairs (no private scalar) work with ecPublicPoint.
+    var kp = try Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+    var point: [33]u8 = undefined;
+    const plen = try kp.ecPublicPoint(.ecdsa_p256, &point);
+    try std.testing.expectEqual(@as(usize, 33), plen);
+
+    var pub_kp = try Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, point[0..plen]);
+    defer pub_kp.deinit();
+    var reexport: [33]u8 = undefined;
+    const rlen = try pub_kp.ecPublicPoint(.ecdsa_p256, &reexport);
+    try std.testing.expectEqual(@as(usize, 33), rlen);
+    try std.testing.expectEqualSlices(u8, point[0..plen], reexport[0..rlen]);
 }
 
 test "fromEcPublicPoint / fromEcPrivateScalar reject non-P256/384 algs" {

@@ -317,10 +317,60 @@ pub const Sig = struct {
             };
         }
 
-        /// Import an EC private key from the raw big-endian private scalar
-        /// (32B P-256 / 48B P-384). Only `.ecdsa_p256`/`.ecdsa_p384`.
-        /// Mirrors the FIPS backend surface; the resulting keypair signs
-        /// and verifies. std derives the public key from the scalar.
+        /// Export the raw big-endian EC private scalar for the generated
+        /// key. Only `.ecdsa_p256` (32 bytes) and `.ecdsa_p384` (48 bytes)
+        /// are supported; other algorithms return `error.Unsupported`.
+        ///
+        /// CONTRACT: `out` must be at least `coord_len` bytes (32 for
+        /// P-256, 48 for P-384). The output is FIXED-WIDTH: std's
+        /// SecretKey stores the scalar as a fixed-width byte array, so no
+        /// padding is needed. Mirrors the FIPS backend's `BN_bn2binpad`
+        /// guarantee so callers always receive exactly `coord_len` bytes.
+        pub fn privateScalar(self: *KeyPair, alg: policy.SigAlg, out: []u8) Error!usize {
+            switch (alg) {
+                .ecdsa_p256 => {
+                    if (out.len < P256.SecretKey.encoded_length) return error.OpensslFailure;
+                    const sk: P256.SecretKey = switch (self.inner) {
+                        .p256 => |kp| kp.secret_key,
+                        else => return error.Unsupported,
+                    };
+                    const bytes = sk.toBytes();
+                    @memcpy(out[0..bytes.len], &bytes);
+                    return bytes.len;
+                },
+                .ecdsa_p384 => {
+                    if (out.len < P384.SecretKey.encoded_length) return error.OpensslFailure;
+                    const sk: P384.SecretKey = switch (self.inner) {
+                        .p384 => |kp| kp.secret_key,
+                        else => return error.Unsupported,
+                    };
+                    const bytes = sk.toBytes();
+                    @memcpy(out[0..bytes.len], &bytes);
+                    return bytes.len;
+                },
+                else => return error.Unsupported,
+            }
+        }
+
+        /// Export the raw 32-byte Ed25519 seed. Only valid for Ed25519
+        /// keypairs (not public-only variants); `out` must be at least 32
+        /// bytes. Returns 32 on success. Mirrors the FIPS backend surface
+        /// so geode can store the seed and re-derive keys cross-backend.
+        pub fn privateSeed(self: *KeyPair, out: []u8) Error!usize {
+            const seed_len = Ed25519.KeyPair.seed_length;
+            if (out.len < seed_len) return error.OpensslFailure;
+            switch (self.inner) {
+                .ed25519 => |kp| {
+                    // std's Ed25519.KeyPair stores the secret key as the 64-byte
+                    // (seed ++ public) form. The seed is the first 32 bytes.
+                    const sk_bytes = kp.secret_key.toBytes();
+                    @memcpy(out[0..seed_len], sk_bytes[0..seed_len]);
+                    return seed_len;
+                },
+                else => return error.Unsupported,
+            }
+        }
+
         /// Import an EC private key from a raw big-endian scalar.
         /// CONTRACT: `scalar` must be FIXED-WIDTH for the curve (32 bytes for
         /// P-256, 48 for P-384). This shim rejects shorter inputs (e.g. a
@@ -541,4 +591,115 @@ fn toArr(comptime n: usize, raw: []const u8) error{BadLen}![n]u8 {
     var a: [n]u8 = undefined;
     @memcpy(&a, raw[0..n]);
     return a;
+}
+
+// -------------------------------------------------------------------------
+// Tests: privateScalar / privateSeed round-trips (both backends must pass).
+// -------------------------------------------------------------------------
+
+test "privateScalar P-256 round-trip: export → fromEcPrivateScalar + fromEcPublicPoint → sign/verify" {
+    var kp = try Sig.generate(.ecdsa_p256);
+    defer kp.deinit();
+
+    // Export private scalar (must be fixed-width 32 bytes).
+    var scalar: [32]u8 = undefined;
+    const slen = try kp.privateScalar(.ecdsa_p256, &scalar);
+    try std.testing.expectEqual(@as(usize, 32), slen);
+
+    // Export public point as compressed SEC1.
+    var point: [65]u8 = undefined;
+    const plen = try kp.publicBytes(&point);
+
+    // Re-import scalar and point independently.
+    var priv_kp = try Sig.KeyPair.fromEcPrivateScalar(.ecdsa_p256, scalar[0..slen]);
+    defer priv_kp.deinit();
+    var pub_kp = try Sig.KeyPair.fromEcPublicPoint(.ecdsa_p256, point[0..plen]);
+    defer pub_kp.deinit();
+
+    // Sign with the imported scalar; verify with the imported public point.
+    const msg = "privateScalar p256 round-trip";
+    var sig: [128]u8 = undefined;
+    const n = try Sig.sign(.ecdsa_p256, &priv_kp, msg, &sig);
+    try Sig.verify(.ecdsa_p256, &pub_kp, msg, sig[0..n]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verify(.ecdsa_p256, &pub_kp, "tampered", sig[0..n]));
+}
+
+test "privateScalar P-384 round-trip: export → fromEcPrivateScalar + fromEcPublicPoint → sign/verify" {
+    var kp = try Sig.generate(.ecdsa_p384);
+    defer kp.deinit();
+
+    // Export private scalar (must be fixed-width 48 bytes).
+    var scalar: [48]u8 = undefined;
+    const slen = try kp.privateScalar(.ecdsa_p384, &scalar);
+    try std.testing.expectEqual(@as(usize, 48), slen);
+
+    // Export public point as compressed SEC1.
+    var point: [65]u8 = undefined;
+    const plen = try kp.publicBytes(&point);
+
+    // Re-import scalar and point independently.
+    var priv_kp = try Sig.KeyPair.fromEcPrivateScalar(.ecdsa_p384, scalar[0..slen]);
+    defer priv_kp.deinit();
+    var pub_kp = try Sig.KeyPair.fromEcPublicPoint(.ecdsa_p384, point[0..plen]);
+    defer pub_kp.deinit();
+
+    // Sign with the imported scalar; verify with the imported public point.
+    const msg = "privateScalar p384 round-trip";
+    var sig: [128]u8 = undefined;
+    const n = try Sig.sign(.ecdsa_p384, &priv_kp, msg, &sig);
+    try Sig.verify(.ecdsa_p384, &pub_kp, msg, sig[0..n]);
+    try std.testing.expectError(error.VerifyFailed, Sig.verify(.ecdsa_p384, &pub_kp, "tampered", sig[0..n]));
+}
+
+test "privateSeed Ed25519 round-trip: export → fromPrivateBytes → sign/verify + pubkey match" {
+    var kp = try Sig.generate(.ed25519);
+    defer kp.deinit();
+
+    // Export the seed (32 bytes).
+    var seed: [32]u8 = undefined;
+    const seed_len = try kp.privateSeed(&seed);
+    try std.testing.expectEqual(@as(usize, 32), seed_len);
+
+    // Export original public key.
+    var pub_orig: [32]u8 = undefined;
+    const pn = try kp.publicBytes(&pub_orig);
+    try std.testing.expectEqual(@as(usize, 32), pn);
+
+    // Re-import from seed; re-derive signing keypair.
+    var reimported = try Sig.KeyPair.fromPrivateBytes(.ed25519, seed[0..seed_len]);
+    defer reimported.deinit();
+
+    // Sign with the re-imported keypair and verify with the original.
+    const msg = "privateSeed ed25519 round-trip";
+    var sig: [64]u8 = undefined;
+    const n = try Sig.sign(.ed25519, &reimported, msg, &sig);
+    try Sig.verify(.ed25519, &kp, msg, sig[0..n]);
+
+    // The re-derived public key must match the original.
+    var pub_reimported: [32]u8 = undefined;
+    const pn2 = try reimported.publicBytes(&pub_reimported);
+    try std.testing.expectEqual(@as(usize, 32), pn2);
+    try std.testing.expectEqualSlices(u8, &pub_orig, &pub_reimported);
+}
+
+test "privateScalar rejects non-EC algs and short output buffers" {
+    // privateScalar rejects Ed25519.
+    var ed_kp = try Sig.generate(.ed25519);
+    defer ed_kp.deinit();
+    var buf32 = [_]u8{0} ** 32;
+    try std.testing.expectError(error.Unsupported, ed_kp.privateScalar(.ed25519, &buf32));
+
+    // privateScalar rejects a buf that is too short.
+    var ec_kp = try Sig.generate(.ecdsa_p256);
+    defer ec_kp.deinit();
+    var buf16 = [_]u8{0} ** 16;
+    try std.testing.expectError(error.OpensslFailure, ec_kp.privateScalar(.ecdsa_p256, &buf16));
+
+    // privateSeed rejects a buf that is too short.
+    var buf16b = [_]u8{0} ** 16;
+    try std.testing.expectError(error.OpensslFailure, ed_kp.privateSeed(&buf16b));
+
+    // privateSeed rejects a non-Ed25519 (EC) key.
+    var buf32b = [_]u8{0} ** 32;
+    try std.testing.expectError(error.Unsupported, ec_kp.privateSeed(&buf32b));
 }

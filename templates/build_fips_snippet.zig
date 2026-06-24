@@ -16,6 +16,12 @@
 //          FIPS-140-3 OpenSSL provider") orelse false;
 //   2. const opts = b.addOptions();
 //      opts.addOption(bool, "fips", fips);
+//      // REQUIRED (GAP-0020 cross-package rule): make this lib's generated
+//      // options.zig content UNIQUE so Zig 0.16 does not content-dedup it
+//      // against another seam lib's identical build_options in a large
+//      // consumer graph (which collapses crypto_backend.zig into multiple
+//      // module roots). Use THIS lib's crate name:
+//      opts.addOption([]const u8, "package_name", "<your-lib-name>");
 //      const build_options_mod = opts.createModule();   // THE ONE INSTANCE
 //   3. const openssl_path = b.option([]const u8, "openssl_path",
 //          "OpenSSL prefix (e.g. /usr/local/ssl)");
@@ -24,7 +30,10 @@
 //        module.addImport("std_shim", std_shim_mod); // rooted at src/std_shim.zig
 //      and, ONLY when fips is on, the lazy fips dep + its OpenSSL link:
 //        const fips_mod: ?*std.Build.Module = if (fips) blk: {
-//            if (b.lazyDependency("fips", .{ .target = target, .optimize = optimize })) |dep| {
+//            // REQUIRED (GAP-0020 fips-split rule): pass openssl_path here,
+//            // and pass the SAME value in EVERY lib you propagate -Dfips to
+//            // (quic/tls/etc.), else the fips backend splits into fips/fips0:
+//            if (b.lazyDependency("fips", .{ .target = target, .optimize = optimize, .openssl_path = openssl_path orelse "/usr/local/ssl" })) |dep| {
 //                const m = dep.module("fips");
 //                module.addImport("fips", m);
 //                break :blk m;

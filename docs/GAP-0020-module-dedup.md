@@ -64,3 +64,51 @@ module, both seam tests, the lib, and the check step. Both
 `-Dwith_otel=false` (default) and `-Dwith_otel=true` build green with no
 `file exists in modules` error — proving the single-instance wiring fixes
 the bug.
+
+## Cross-package variant — byte-identical `build_options` across DIFFERENT libs
+
+Even with exactly one `build_options` module per lib (the rule above), a
+LARGE consumer graph that pulls many seam libs at once (geode → quic, tls,
+otel, fle, raft, audit, graph_storage, …) hits a SECOND form of the same
+Zig 0.16 bug: each lib's generated `options.zig` is **byte-identical**
+when it carries only the same options (e.g. `with_otel` + `fips`). Zig
+0.16 dedups generated option modules **by content**, so it collapses these
+distinct libs' `build_options` into shared roots (`build_options17` /
+`build_options20`) and then reports a seam file (`crypto_backend.zig`,
+`endpoint.zig`) as rooted through multiple module identities — even though
+each lib is correctly single-instanced internally.
+
+> **Canonical rule:** every seam lib MUST make its `build_options` content
+> UNIQUE by adding its own crate name, BEFORE `.createModule()`:
+>
+> ```zig
+> build_options.addOption([]const u8, "package_name", "<this-lib>");
+> ```
+>
+> This guarantees no two libs' generated `options.zig` are byte-identical,
+> so Zig never collapses them.
+
+Discovered + fixed across the entire devnw/zig FIPS stack on 2026-06-24
+when geode's `-Dfips` build pulled ~20 seam libs into one module graph.
+
+## fips backend split — `fips` vs `fips0`
+
+When a top-level consumer propagates `-Dfips` to transitive transport seam
+deps (geode → quic → tls), each lib resolves the lazy `fips` dependency
+itself. If they pass **different** `openssl_path` values to
+`b.lazyDependency("fips", …)`, the fips backend resolves to DIFFERENT
+dependency instances (`fips` and `fips0`), and a seam file importing `fips`
+is reported as rooted through both:
+
+```text
+error: .../crypto_backend.zig exists in modules 'fips' and 'fips0'
+```
+
+Trigger hit on 2026-06-24: tls/quic passed `.openssl_path = openssl_path
+orelse "/usr/local/ssl"` while the top-level consumer (geode) passed NO
+`openssl_path` to its own `b.lazyDependency("fips", …)`.
+
+> **Canonical rule:** EVERY `b.lazyDependency("fips", …)` in the chain —
+> the consumer's own AND every lib it propagates `-Dfips` to — MUST pass
+> the SAME `.openssl_path` (use `openssl_path orelse "/usr/local/ssl"`), so
+> the fips backend module is shared, not split.

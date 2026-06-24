@@ -5,7 +5,7 @@
 //! Public surface is filled in by later tasks (policy, Hash, Mac, Kdf,
 //! Aead, Sig, Kem, Csprng, assertActive).
 
-pub const version = "0.1.0";
+pub const version = "0.1.1";
 
 pub const policy = @import("policy.zig");
 
@@ -32,7 +32,7 @@ pub const timingSafeEql = @import("util.zig").timingSafeEql;
 
 test "package version is set" {
     const std = @import("std");
-    try std.testing.expectEqualStrings("0.1.0", version);
+    try std.testing.expectEqualStrings("0.1.1", version);
 }
 
 test {

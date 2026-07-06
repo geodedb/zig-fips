@@ -25,6 +25,179 @@ pub fn isPqc(alg: policy.SigAlg) bool {
     return sigFamily(alg) == .pqc;
 }
 
+// ---------------------------------------------------------------------------
+// EC / PQC key import under FIPS.
+//
+// sigil hands the seam STRIPPED key material, not self-describing DER:
+//   * EC private  -> bare SEC1 ECPrivateKey (PKCS#8 privateKey OCTET STRING
+//                    contents) WITHOUT the [0] curve params.
+//   * EC public   -> raw SEC1 point (0x04||X||Y), no SPKI wrapper.
+//   * PQC private -> the PKCS#8 privateKey OCTET STRING contents.
+//   * PQC public  -> the raw public key bytes.
+// std.crypto (the non-fips shim) recovers the algorithm from the comptime Zig
+// type, but OpenSSL's decoders need the algorithm/curve in an AlgorithmIdentifier
+// — with only the stripped bytes every decode returns NULL under the fips+base
+// provider config. So reconstruct a PKCS#8 (private) or SubjectPublicKeyInfo
+// (public) carrying the AlgorithmIdentifier implied by `alg`, then decode through
+// the FIPS libctx. (Root cause of the -Dfips CMS / ECDSA / CRL / PQC failures.)
+// ---------------------------------------------------------------------------
+
+// EC AlgorithmIdentifier ::= SEQUENCE { id-ecPublicKey, <namedCurve> } DER.
+// id-ecPublicKey = 1.2.840.10045.2.1. PQC AlgIds are built dynamically from the
+// algorithm name via OBJ_txt2obj (no fixed params), covering all ML-DSA/SLH-DSA.
+const ec_algid_p256 = [_]u8{ // prime256v1 = 1.2.840.10045.3.1.7
+    0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+    0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+};
+const ec_algid_p384 = [_]u8{ // secp384r1 = 1.3.132.0.34
+    0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+    0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22,
+};
+const ec_algid_p521 = [_]u8{ // secp521r1 = 1.3.132.0.35
+    0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+    0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23,
+};
+
+// Return the DER AlgorithmIdentifier SEQUENCE for `alg`. EC returns a static
+// constant; PQC builds SEQUENCE { OID(sigName) } into `buf` via OBJ_txt2obj.
+// Returns null for algorithms that decode without a wrapper (RSA/Ed25519).
+fn algIdFor(alg: policy.SigAlg, buf: []u8) ?[]const u8 {
+    switch (alg) {
+        .ecdsa_p256 => return &ec_algid_p256,
+        .ecdsa_p384 => return &ec_algid_p384,
+        .ecdsa_p521 => return &ec_algid_p521,
+        else => {},
+    }
+    if (sigFamily(alg) != .pqc) return null;
+    const obj = c.OBJ_txt2obj(policy.sigName(alg).ptr, 0) orelse return null;
+    defer c.ASN1_OBJECT_free(obj);
+    var oid: [64]u8 = undefined;
+    var op: [*c]u8 = &oid;
+    const oid_len = c.i2d_ASN1_OBJECT(obj, &op);
+    if (oid_len <= 0) return null;
+    const ol: usize = @intCast(oid_len);
+    if (ol >= 0x80 or 2 + ol > buf.len) return null; // OID SEQ length is single-byte
+    buf[0] = 0x30;
+    buf[1] = @intCast(ol);
+    @memcpy(buf[2..][0..ol], oid[0..ol]);
+    return buf[0 .. 2 + ol];
+}
+
+// Write a minimal DER length for `n` into `out`, returning bytes written.
+// Handles lengths up to 0xffff — ample for the largest ML-DSA PKCS#8.
+fn writeDerLen(out: []u8, n: usize) usize {
+    if (n < 0x80) {
+        out[0] = @intCast(n);
+        return 1;
+    }
+    if (n <= 0xff) {
+        out[0] = 0x81;
+        out[1] = @intCast(n);
+        return 2;
+    }
+    out[0] = 0x82;
+    out[1] = @intCast((n >> 8) & 0xff);
+    out[2] = @intCast(n & 0xff);
+    return 3;
+}
+
+// Build PKCS#8 PrivateKeyInfo { version 0, <algid>, OCTET STRING(inner) } into
+// `buf`. Returns the encoded slice, or null on overflow.
+fn buildPkcs8(buf: []u8, algid: []const u8, inner: []const u8) ?[]const u8 {
+    const version = [_]u8{ 0x02, 0x01, 0x00 };
+    var oct_len_buf: [3]u8 = undefined;
+    const oct_len_n = writeDerLen(&oct_len_buf, inner.len);
+    const octet_total = 1 + oct_len_n + inner.len; // 0x04 || len || inner
+    const content_len = version.len + algid.len + octet_total;
+    var seq_len_buf: [3]u8 = undefined;
+    const seq_len_n = writeDerLen(&seq_len_buf, content_len);
+    if (1 + seq_len_n + content_len > buf.len) return null;
+    var i: usize = 0;
+    buf[i] = 0x30;
+    i += 1;
+    @memcpy(buf[i..][0..seq_len_n], seq_len_buf[0..seq_len_n]);
+    i += seq_len_n;
+    @memcpy(buf[i..][0..version.len], &version);
+    i += version.len;
+    @memcpy(buf[i..][0..algid.len], algid);
+    i += algid.len;
+    buf[i] = 0x04;
+    i += 1;
+    @memcpy(buf[i..][0..oct_len_n], oct_len_buf[0..oct_len_n]);
+    i += oct_len_n;
+    @memcpy(buf[i..][0..inner.len], inner);
+    i += inner.len;
+    return buf[0..i];
+}
+
+// Build SubjectPublicKeyInfo { <algid>, BIT STRING(0x00 || pub_raw) } into
+// `buf`. `pub_raw` is the raw key value (SEC1 point / PQC public bytes), no
+// leading unused-bits byte. Returns the encoded slice, or null on overflow.
+fn buildSpki(buf: []u8, algid: []const u8, pub_raw: []const u8) ?[]const u8 {
+    const bitstr_val = 1 + pub_raw.len; // 0x00 unused-bits || pub_raw
+    var bit_len_buf: [3]u8 = undefined;
+    const bit_len_n = writeDerLen(&bit_len_buf, bitstr_val);
+    const bitstr_total = 1 + bit_len_n + bitstr_val; // 0x03 || len || value
+    const content_len = algid.len + bitstr_total;
+    var seq_len_buf: [3]u8 = undefined;
+    const seq_len_n = writeDerLen(&seq_len_buf, content_len);
+    if (1 + seq_len_n + content_len > buf.len) return null;
+    var i: usize = 0;
+    buf[i] = 0x30;
+    i += 1;
+    @memcpy(buf[i..][0..seq_len_n], seq_len_buf[0..seq_len_n]);
+    i += seq_len_n;
+    @memcpy(buf[i..][0..algid.len], algid);
+    i += algid.len;
+    buf[i] = 0x03;
+    i += 1;
+    @memcpy(buf[i..][0..bit_len_n], bit_len_buf[0..bit_len_n]);
+    i += bit_len_n;
+    buf[i] = 0x00; // unused bits
+    i += 1;
+    @memcpy(buf[i..][0..pub_raw.len], pub_raw);
+    i += pub_raw.len;
+    return buf[0..i];
+}
+
+// Import an EC or PQC private key. Reconstruct the PKCS#8 from `raw` + the
+// AlgorithmIdentifier for `alg`, then decode; fall back to decoding `raw` as-is
+// if it's already self-describing (full SEC1-with-params or PKCS#8).
+fn importPrivate(alg: policy.SigAlg, raw: []const u8) ?*c.EVP_PKEY {
+    const raw_len = ffi.toCLong(raw.len) catch return null;
+    var algid_buf: [80]u8 = undefined;
+    if (algIdFor(alg, &algid_buf)) |algid| {
+        var buf: [8192]u8 = undefined; // ML-DSA-87 PKCS#8 is ~5 KB
+        if (buildPkcs8(&buf, algid, raw)) |pk8| {
+            var pp: [*c]const u8 = pk8.ptr;
+            const pk8_len = ffi.toCLong(pk8.len) catch return null;
+            if (c.d2i_AutoPrivateKey_ex(null, &pp, pk8_len, provider.libCtx(), "fips=yes")) |k| return k;
+            c.ERR_clear_error();
+        }
+    }
+    var pp: [*c]const u8 = raw.ptr;
+    return c.d2i_AutoPrivateKey_ex(null, &pp, raw_len, provider.libCtx(), "fips=yes");
+}
+
+// Import an EC or PQC public key. Decode `raw` directly first (it may already
+// be a full SubjectPublicKeyInfo), else reconstruct the SPKI from `raw` + the
+// AlgorithmIdentifier for `alg` and decode that.
+fn importPublic(alg: policy.SigAlg, raw: []const u8) ?*c.EVP_PKEY {
+    const raw_len = ffi.toCLong(raw.len) catch return null;
+    {
+        var pp: [*c]const u8 = raw.ptr;
+        if (c.d2i_PUBKEY_ex(null, &pp, raw_len, provider.libCtx(), "fips=yes")) |k| return k;
+        c.ERR_clear_error();
+    }
+    var algid_buf: [80]u8 = undefined;
+    const algid = algIdFor(alg, &algid_buf) orelse return null;
+    var buf: [4096]u8 = undefined; // ML-DSA-87 public is ~2.6 KB
+    const spki = buildSpki(&buf, algid, raw) orelse return null;
+    var pp: [*c]const u8 = spki.ptr;
+    const spki_len = ffi.toCLong(spki.len) catch return null;
+    return c.d2i_PUBKEY_ex(null, &pp, spki_len, provider.libCtx(), "fips=yes");
+}
+
 const min_rsa_bits = 2048;
 
 fn assertRsaStrength(pkey: *c.EVP_PKEY) Sig.Error!void {
@@ -134,11 +307,12 @@ pub const Sig = struct {
             provider.assertActive();
             const pkey = switch (sigFamily(alg)) {
                 .ed25519 => c.EVP_PKEY_new_raw_public_key_ex(provider.libCtx(), "ED25519", "fips=yes", raw.ptr, raw.len),
-                .pqc => c.EVP_PKEY_new_raw_public_key_ex(provider.libCtx(), policy.sigName(alg), "fips=yes", raw.ptr, raw.len),
-                .der => blk: { // ECDSA / RSA: decode SubjectPublicKeyInfo DER.
-                    var pp: [*c]const u8 = raw.ptr;
-                    break :blk c.d2i_PUBKEY(null, &pp, try ffi.toCLong(raw.len));
-                },
+                // PQC public key: `raw` is the raw public bytes; wrap in an SPKI
+                // with the alg's AlgorithmIdentifier and decode (see importPublic).
+                .pqc => importPublic(alg, raw),
+                // ECDSA (raw SEC1 point) or RSA (full SPKI): importPublic decodes
+                // a full SPKI directly, else wraps a raw EC point into one.
+                .der => importPublic(alg, raw),
             } orelse return error.OpensslFailure;
             errdefer c.EVP_PKEY_free(pkey);
             if (sigIsRsa(alg)) try assertRsaStrength(pkey);
@@ -149,11 +323,21 @@ pub const Sig = struct {
             provider.assertActive();
             const pkey = switch (sigFamily(alg)) {
                 .ed25519 => c.EVP_PKEY_new_raw_private_key_ex(provider.libCtx(), "ED25519", "fips=yes", raw.ptr, raw.len),
-                .pqc => c.EVP_PKEY_new_raw_private_key_ex(provider.libCtx(), policy.sigName(alg), "fips=yes", raw.ptr, raw.len),
-                .der => blk: { // ECDSA / RSA: decode type-specific DER.
-                    var pp: [*c]const u8 = raw.ptr;
-                    const t: c_int = if (sigIsRsa(alg)) c.EVP_PKEY_RSA else c.EVP_PKEY_EC;
-                    break :blk c.d2i_PrivateKey(t, null, &pp, try ffi.toCLong(raw.len));
+                // PQC private key: the PKCS#8 inner is a structured blob, not the
+                // raw key EVP_PKEY_new_raw_private_key expects — reconstruct the
+                // PKCS#8 and decode (see importPrivate).
+                .pqc => importPrivate(alg, raw),
+                .der => blk: {
+                    if (sigIsRsa(alg)) {
+                        // RSAPrivateKey (PKCS#1) is self-describing; _ex threads
+                        // the FIPS libctx + "fips=yes" so the plain default-ctx
+                        // d2i (which returns NULL under fips+base) is avoided.
+                        var pp: [*c]const u8 = raw.ptr;
+                        break :blk c.d2i_PrivateKey_ex(c.EVP_PKEY_RSA, null, &pp, try ffi.toCLong(raw.len), provider.libCtx(), "fips=yes");
+                    }
+                    // EC: `raw` is a bare SEC1 with no curve params — reconstruct
+                    // a PKCS#8 with the curve from `alg` (see importPrivate).
+                    break :blk importPrivate(alg, raw);
                 },
             } orelse return error.OpensslFailure;
             errdefer c.EVP_PKEY_free(pkey);
@@ -168,7 +352,8 @@ pub const Sig = struct {
         pub fn fromRsaSpki(der: []const u8) Error!KeyPair {
             provider.assertActive();
             var pp: [*c]const u8 = der.ptr;
-            const k = c.d2i_PUBKEY(null, &pp, try ffi.toCLong(der.len)) orelse return error.OpensslFailure;
+            // _ex threads the FIPS libctx + "fips=yes" (see fromPublicBytes).
+            const k = c.d2i_PUBKEY_ex(null, &pp, try ffi.toCLong(der.len), provider.libCtx(), "fips=yes") orelse return error.OpensslFailure;
             errdefer c.EVP_PKEY_free(k);
             try assertRsaStrength(k);
             return .{ .pkey = k };

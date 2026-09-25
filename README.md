@@ -104,7 +104,7 @@ Both backends (`fips` OpenSSL backend and `std_shim`) expose an identical surfac
 | `Aead` | AES-128-GCM / AES-256-GCM seal + open |
 | `Sig` | ECDSA P-256/384/521, RSA-PSS/PKCS1, Ed25519, ML-DSA-44/65/87, all 12 SLH-DSA variants |
 | `Kem` | ML-KEM-512/768/1024 + hybrid KEMs (`X25519MLKEM768`, etc.) |
-| `Csprng` | SP 800-90A DRBG (fips) / OS entropy via `getrandom` (Linux; macOS/Windows runtime support deferred per docs/FIPS_SPECIFICATION.md) (shim) |
+| `Csprng` | SP 800-90A DRBG (fips) / OS entropy via `std.Io.randomSecure` (getrandom on Linux, arc4random_buf on macOS, CNG on Windows; fail-closed, no PRNG fallback) (shim) |
 | `secureZero(buf: []u8)` | Constant-time memory wipe (non-FIPS governed, always available) |
 | `timingSafeEql(a, b: []const u8) bool` | Constant-time byte-slice comparison |
 | `assertActive()` | Panics if the validated FIPS module is not loaded (no-op in shim) |

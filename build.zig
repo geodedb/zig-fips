@@ -71,11 +71,19 @@ pub fn build(b: *std.Build) void {
     // Check step — fast IDE feedback. Compiles unit tests without
     // running them.
     // ------------------------------------------------------------------
+    // The OpenSSL-free shim artifacts are always checked (wired below). The
+    // fips backend links libcrypto/libssl, so a cross-OS `-Dtarget` without
+    // `-Dopenssl_path` cannot resolve those libraries; skip only that
+    // artifact then, so `zig build check -Dtarget=<other-os>` still proves
+    // the canonical std_shim compiles for Windows/macOS.
     const check_step = b.step("check", "Compile the library and tests without running them");
-    const check_tests = b.addTest(.{
-        .root_module = module,
-    });
-    check_step.dependOn(&check_tests.step);
+    const cross_os = target.result.os.tag != b.graph.host.result.os.tag;
+    if (!cross_os or openssl_path != null) {
+        const check_tests = b.addTest(.{
+            .root_module = module,
+        });
+        check_step.dependOn(&check_tests.step);
+    }
 
     // ------------------------------------------------------------------
     // Test suites.
@@ -182,6 +190,12 @@ pub fn build(b: *std.Build) void {
     });
     const shim_parity = b.addTest(.{ .root_module = shim_parity_root });
     unit_step.dependOn(&b.addRunArtifact(shim_parity).step);
+    check_step.dependOn(&shim_parity.step);
+
+    // The shim's own in-file tests (randomBytes entropy, key round-trips).
+    const shim_tests = b.addTest(.{ .root_module = std_shim_module });
+    unit_step.dependOn(&b.addRunArtifact(shim_tests).step);
+    check_step.dependOn(&shim_tests.step);
 
     // ------------------------------------------------------------------
     // Seam template meta-test — wire templates/crypto_backend.zig with a
@@ -212,6 +226,7 @@ pub fn build(b: *std.Build) void {
     });
     const seam_test = b.addTest(.{ .root_module = seam_test_root });
     unit_step.dependOn(&b.addRunArtifact(seam_test).step);
+    check_step.dependOn(&seam_test.step);
 
     // ------------------------------------------------------------------
     // GAP-0020 module-dedup repro (gated behind -Drepro_dedup).

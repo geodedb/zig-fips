@@ -87,9 +87,11 @@ ID owned by `docs/GAP-0020-module-dedup.md`, so new IDs start at **GAP-0021**.
 
 ### GAP-0027: `std_shim` CSPRNG macOS/Windows RUNTIME coverage — PARTIALLY-CLOSED / DEFERRED
 
-- **Status:** PARTIALLY-CLOSED for compile — commits `1100939` and `8b8fa0d` replace the
-  Linux-only `std.os.linux.getrandom` call with `std.crypto.random` (which abstracts the
-  platform), verified compile on Linux/macOS/Windows via `zig build-obj`. macOS and Windows
+- **Status:** PARTIALLY-CLOSED for compile — SONNY-2763 (v0.1.2) routes `randomBytes`
+  through `std.Io.randomSecure` (getrandom on Linux, arc4random_buf on macOS, the CNG
+  device on Windows; fail-closed, no PRNG fallback). The earlier `std.posix.system.getrandom`
+  call did not compile off Linux; `zig build check -Dtarget=x86_64-windows-gnu|aarch64-macos|x86_64-macos`
+  now compiles the shim and its tests for those targets. macOS and Windows
   **runtime** coverage (actual entropy source exercised on those platforms) remains DEFERRED
   pending runners.
 - **Commits:** `1100939`, `8b8fa0d`

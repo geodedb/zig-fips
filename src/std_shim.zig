@@ -15,19 +15,15 @@ const std = @import("std");
 pub const policy = @import("policy.zig");
 
 fn randomBytes(out: []u8) error{OpensslFailure}!void {
-    // Non-fips shim CSPRNG: OS entropy via the getrandom syscall shim
-    // (std.posix.system), which compiles for Linux/macOS/Windows. The FIPS
-    // backend uses the validated DRBG instead (src/csprng.zig); macOS/Windows
-    // runtime coverage remains the deferred item noted in FIPS_SPECIFICATION.md.
-    var off: usize = 0;
-    while (off < out.len) {
-        const rc = std.posix.system.getrandom(out.ptr + off, out.len - off, 0);
-        switch (std.posix.errno(rc)) {
-            .SUCCESS => off += @intCast(rc), // rc is isize bytes-filled on success; non-negative here
-            .INTR => continue, // interrupted by a signal; retry
-            else => return error.OpensslFailure, // fatal: fail closed, never loop or fall back
-        }
-    }
+    // Non-fips shim CSPRNG: fresh OS entropy via std.Io.randomSecure, which
+    // picks the platform source per target: getrandom(2) on Linux,
+    // arc4random_buf on macOS/BSD, the \Device\CNG kernel RNG on Windows.
+    // It never falls back to a process-local PRNG; any failure is returned
+    // and mapped here to OpensslFailure (fail closed). The global
+    // single-threaded Io is used only for this call, which std documents
+    // as thread-safe (the cached Windows CNG handle is mutex-guarded).
+    // The FIPS backend uses the validated DRBG instead (src/csprng.zig).
+    std.Io.Threaded.global_single_threaded.io().randomSecure(out) catch return error.OpensslFailure;
 }
 
 pub const Hash = struct {
@@ -637,6 +633,18 @@ fn toArr(comptime n: usize, raw: []const u8) error{BadLen}![n]u8 {
     var a: [n]u8 = undefined;
     @memcpy(&a, raw[0..n]);
     return a;
+}
+
+test "randomBytes: OS entropy is non-zero and two draws differ" {
+    var a: [32]u8 = @splat(0);
+    var b: [32]u8 = @splat(0);
+    try Csprng.bytes(&a);
+    try Csprng.bytes(&b);
+    const zero: [32]u8 = @splat(0);
+    try std.testing.expect(!std.mem.eql(u8, &a, &zero));
+    try std.testing.expect(!std.mem.eql(u8, &b, &zero));
+    try std.testing.expect(!std.mem.eql(u8, &a, &b));
+    try Csprng.bytes(a[0..0]); // empty request is a successful no-op
 }
 
 // -------------------------------------------------------------------------

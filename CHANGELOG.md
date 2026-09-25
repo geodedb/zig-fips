@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-25
+
+### Fixed
+
+- `std_shim.zig` `randomBytes` (`Csprng.bytes`) compiled only on Linux: it
+  called `std.posix.system.getrandom`, which is `void` on Windows and macOS.
+  It now uses `std.Io.randomSecure` (getrandom on Linux, arc4random_buf on
+  macOS, the CNG device on Windows), still fail-closed with no PRNG fallback
+  and the same `error{OpensslFailure}` error set (SONNY-2763). Consumers that
+  copy `std_shim.zig` verbatim must re-copy it.
+- `zig build check -Dtarget=<other OS>` now compiles the OpenSSL-free shim,
+  shim-parity and seam artifacts; the OpenSSL-linked backend is skipped for a
+  cross-OS target unless `-Dopenssl_path` is set.
+
+### Added
+
+- `std_shim` in-file tests now run under `zig build test`, including an
+  entropy test (non-zero output, two draws differ).
+
 ## [0.1.0] - 2026-06-22
 
 ### Added

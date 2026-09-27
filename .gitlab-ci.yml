@@ -47,7 +47,10 @@ include:
 - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.25.1
 
   # Release
-- component: gitlab.com/devnw/ci-catalog/release-semantic@v1.25.1
+- component: gitlab.com/devnw/ci-catalog/release-semantic@v1.54.6
+  inputs:
+    release_auth: job_token
+    tags: ["company"]
 
   # Zig formatting (Linux).
 - component: gitlab.com/devnw/ci-catalog/zig-format@v1.25.1

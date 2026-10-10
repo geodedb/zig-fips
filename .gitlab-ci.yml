@@ -67,41 +67,57 @@ include:
   inputs:
     stage: build
     zig_version: "0.16.0"
+    # fips links the system libssl/libcrypto and needs OpenSSL >= 3.5
+    # (PQC); ubuntu:26.04 ships 3.5.x, the 24.04 default only 3.0.
+    ubuntu_version: "26.04"
+    extra_packages: "libssl-dev"
     build_options: "build check"
 
   # Zig tests — Linux matrix across optimize modes + integration + stress.
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-unit-debug"
     test_step: "test"
     optimize: "Debug"
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-unit-releasesafe"
     test_step: "test"
     optimize: "ReleaseSafe"
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-unit-releasefast"
     test_step: "test"
     optimize: "ReleaseFast"
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-unit-releasesmall"
     test_step: "test"
     optimize: "ReleaseSmall"
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-integration"
     test_step: "test-integration"
 - component: gitlab.com/devnw/ci-catalog/zig-test@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
+    test_options: "--summary all -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     job_suffix: "-stress"
     test_step: "test-stress"
 
@@ -110,8 +126,9 @@ include:
 - component: gitlab.com/devnw/ci-catalog/zig-fuzz@v1.55.8
   inputs:
     zig_version: "0.16.0"
+    tags: ["company", "linux", "x86"]
     test_step: "test"
-    test_options: "--fuzz"
+    test_options: "--fuzz -Dopenssl_path=${CI_PROJECT_DIR}/.openssl-fips"
     fuzz_duration: "60"
     timeout: "5m"
     allow_failure: true
@@ -313,28 +330,54 @@ scale-bench:
 fips-deps:
   extends: .zig-host-base
   stage: build
+  # Pin to x86: fips-deps hands a compiled OpenSSL to the test jobs as an
+  # artifact, so producer and consumers must run on the same CPU architecture.
+  tags: [company, linux, x86]
   # gnupg is installed above so the OpenSSL release GPG signature is checked;
   # REQUIRE_GPG=1 makes that authenticity check mandatory (fail closed if the
   # signature/key cannot be verified, e.g. a transient .asc fetch failure).
   variables:
     REQUIRE_GPG: "1"
   script:
-  - apt-get install -y --no-install-recommends perl wget gnupg
-  - make deps
+  # wget + sudo: required by scripts/install-openssl-fips.sh (it fetches
+  # OpenSSL via wget and installs via sudo; as root in the container sudo is
+  # a no-op wrapper). Same setup as devnw/zig/fts-storage.
+  - apt-get install -y --no-install-recommends perl wget gnupg sudo
+  # GitLab artifacts must live under $CI_PROJECT_DIR (/usr/local/ssl cannot
+  # be uploaded), so build into a project-relative prefix. OPENSSL_VERSION is
+  # pinned because the script's "latest 3.x" resolver no longer finds a 3.x
+  # tag now that 4.x is the latest release. Bump with OpenSSL 3.x releases.
+  - OPENSSL_PREFIX="$CI_PROJECT_DIR/.openssl-fips" OPENSSL_VERSION="3.6.3" make deps
   artifacts:
     paths:
-    - /usr/local/ssl
+    - .openssl-fips/
     expire_in: 1 day
-  rules:
-  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  # No rules: the Linux zig-test / zig-fuzz jobs (see .fips-provider-env)
+  # also link and load the FIPS provider from this artifact, so it is
+  # needed in every pipeline.
+
+# The fips test suites load the FIPS provider at runtime (provider.zig), so
+# the catalog Linux zig-test / zig-fuzz jobs link the fips-deps OpenSSL via
+# -Dopenssl_path (their test_options above, plus the x86 tag) and need its
+# openssl.cnf to activate fips+base. They are in the test stage, so they
+# download the fips-deps artifact automatically.
+.fips-provider-env: &fips-provider-env
+  OPENSSL_CONF: "$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf"
+zig-test-unit-debug-0.16.0: { variables: *fips-provider-env }
+zig-test-unit-releasesafe-0.16.0: { variables: *fips-provider-env }
+zig-test-unit-releasefast-0.16.0: { variables: *fips-provider-env }
+zig-test-unit-releasesmall-0.16.0: { variables: *fips-provider-env }
+zig-test-integration-0.16.0: { variables: *fips-provider-env }
+zig-test-stress-0.16.0: { variables: *fips-provider-env }
+zig-fuzz-0.16.0: { variables: *fips-provider-env }
 
 test-fips:
   extends: .zig-host-base
   stage: test
+  tags: [company, linux, x86]
   needs: [ "fips-deps" ]
   script:
-  - make test-dual
+  - OPENSSL_PREFIX="$CI_PROJECT_DIR/.openssl-fips" make test-dual
   rules:
   - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

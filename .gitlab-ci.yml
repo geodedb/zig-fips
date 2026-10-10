@@ -34,6 +34,8 @@ default:
   interruptible: true
   tags:
   - company
+  # The group's Windows runner also has the `company` tag; keep bash jobs on Linux.
+  - linux
 
 include:
   # Security scanning
@@ -52,7 +54,7 @@ include:
 - component: gitlab.com/devnw/ci-catalog/release-semantic@3122045afd7832332b342ca72065e4db7dde5ed4
   inputs:
     release_auth: job_token
-    tags: ["company"]
+    tags: ["company", "linux"]
 
   # Zig formatting (Linux).
 - component: gitlab.com/devnw/ci-catalog/zig-format@v1.55.8

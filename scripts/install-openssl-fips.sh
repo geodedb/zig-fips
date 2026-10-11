@@ -107,8 +107,8 @@ wget -q "${BASE_URL}/${TARBALL}"
 #   Previous (still used for some 3.x series releases):
 #     BA54 73A2 B058 7B07 FB27  CF2D 2160 94DF D0CB 81EF
 # ---------------------------------------------------------------------------
-OPENSSL_RELEASE_KEY_CURRENT="B146647E45A7B33947AB226B2A2C87D161692D40"
-OPENSSL_RELEASE_KEY_PREVIOUS="BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"
+OPENSSL_RELEASE_KEY_CURRENT="B146647E45A7B33947AB226B2A2C87D161692D40"  # gitleaks:allow -- public OpenSSL release-signing key fingerprint, not a secret
+OPENSSL_RELEASE_KEY_PREVIOUS="BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"  # gitleaks:allow -- public OpenSSL release-signing key fingerprint, not a secret
 
 SHA256_VERIFIED=no
 GPG_VERIFIED=no

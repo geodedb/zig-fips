@@ -12,9 +12,13 @@
 | Family | Algorithms | API |
 |---|---|---|
 | KEM (ML-KEM) | ML-KEM-512, ML-KEM-768, ML-KEM-1024 | `fips.Kem` (`generate`/`encapsulate`/`decapsulate`) |
-| KEM (hybrid) | X25519MLKEM768 (default), X448MLKEM1024, SecP256r1MLKEM768, SecP384r1MLKEM1024 | `fips.Kem` |
+| KEM (hybrid) | X25519MLKEM768 (default), SecP256r1MLKEM768, SecP384r1MLKEM1024 | `fips.Kem` |
 | Signature (ML-DSA) | ML-DSA-44, ML-DSA-65, ML-DSA-87 | `fips.Sig` (`generate`/`sign`/`verify`) |
 | Signature (SLH-DSA) | all 12: SLH-DSA-SHA2-{128,192,256}{s,f}, SLH-DSA-SHAKE-{128,192,256}{s,f} | `fips.Sig` |
+
+`X448MLKEM1024` retains an enum/name for compatibility but is rejected with
+`error.Unsupported`: the supported OpenSSL 3.6.5 provider marks it `fips=no`
+(SONNY-4782). It is excluded from the approved algorithm inventory.
 
 Status legend: **Available** = wrapped + KAT/interop-tested in the `fips`
 package (foundation Tasks 8-9). **Planned** = consumer integration
@@ -24,7 +28,7 @@ tracked in that repo's plan. **N/A** = no PQC role.
 
 | Library | PQC role | KEM | Signature | Status |
 |---|---|---|---|---|
-| `fips` | Provider wrappers + KATs/interop | ML-KEM 512/768/1024 + all 4 hybrids | ML-DSA 44/65/87 + all 12 SLH-DSA | Available |
+| `fips` | Provider wrappers + KATs/interop | ML-KEM 512/768/1024 + 3 approved hybrids | ML-DSA 44/65/87 + all 12 SLH-DSA | Available |
 | `tls` | Hybrid KEM in TLS 1.3 key schedule; ML-DSA cert/handshake sigs | X25519MLKEM768 (default) + SecP256r1MLKEM768 | ML-DSA-65 cert + handshake | Planned (hub) |
 | `quic` | Inherits PQC handshake via `tls` | via tls | via tls | Planned |
 | `wireguard` | Inherits hybrid KEM via `tls` patterns | X25519MLKEM768 | — | Planned |

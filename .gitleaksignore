@@ -1,8 +1,0 @@
-# Per-finding gitleaks suppressions (fingerprint = commit:file:rule:line).
-# scripts/install-openssl-fips.sh: OpenSSL's public release-signing key
-# fingerprints, used to verify the downloaded tarball; not secrets. The
-# current lines carry an inline gitleaks:allow; these are older commits.
-cc002326ad9e56a847605c165ccf2555dd89f945:scripts/install-openssl-fips.sh:generic-api-key:110
-cc002326ad9e56a847605c165ccf2555dd89f945:scripts/install-openssl-fips.sh:generic-api-key:111
-d8661c16373c2ad3a0dd42d9dbf71a786b91a821:scripts/install-openssl-fips.sh:generic-api-key:110
-d8661c16373c2ad3a0dd42d9dbf71a786b91a821:scripts/install-openssl-fips.sh:generic-api-key:111

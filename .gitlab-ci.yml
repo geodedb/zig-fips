@@ -274,8 +274,11 @@ zig-test-windows-stress-0.16.0:
 .zig-host-base:
   image: "ubuntu:24.04"
   # Producer and consumers must use the same OS, ABI, and architecture.
-  # These tags match the existing Lab Servers and company k8s runners.
-  tags: ["company", "linux", "amd64", "docker"]
+  # `x86` selects the x86_64 Linux pool (OVH dedicated runners plus the AWS
+  # overflow autoscaler); the image pins the OS/ABI. The amd64+docker pool
+  # (Lab Servers, company k8s) is often saturated by other projects, which
+  # left fips-deps pending for 45+ minutes.
+  tags: ["company", "linux", "x86"]
   interruptible: true
   before_script:
   - apt-get update -qq

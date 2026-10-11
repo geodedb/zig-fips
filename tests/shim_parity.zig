@@ -521,3 +521,17 @@ test "shim ECDSA P-384 sign emits DER and verify accepts it (parity with FIPS ba
     const raw_bytes = (try raw_sig.sign(msg, null)).toBytes();
     try std.testing.expectError(error.VerifyFailed, shim.Sig.verify(.ecdsa_p384, &kp, msg, &raw_bytes));
 }
+
+test "SONNY-4793 shim public KEM API stays unsupported without touching outputs" {
+    var kp: shim.Kem.KeyPair = .{};
+    defer kp.deinit();
+    var pk: shim.Kem.PublicKey = .{};
+    defer pk.deinit();
+    var out = [_]u8{0xa5} ** 32;
+    var ss = [_]u8{0x5a} ** 32;
+    try std.testing.expectError(error.Unsupported, shim.Kem.importPublic(.x25519_ml_kem_768, &.{}));
+    try std.testing.expectError(error.Unsupported, shim.Kem.exportPublic(.x25519_ml_kem_768, &kp, &out));
+    try std.testing.expectError(error.Unsupported, shim.Kem.encapsulatePublic(.x25519_ml_kem_768, &pk, &out, &ss));
+    try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
+    try std.testing.expect(std.mem.allEqual(u8, &ss, 0x5a));
+}

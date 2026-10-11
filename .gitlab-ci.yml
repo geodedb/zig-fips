@@ -352,24 +352,17 @@ fips-deps:
     paths:
     - .openssl-fips/
     expire_in: 1 day
-  # No rules: the Linux zig-test / zig-fuzz jobs (see .fips-provider-env)
-  # also link and load the FIPS provider from this artifact, so it is
+  # No rules: the Linux zig-test / zig-fuzz jobs also link and load the FIPS provider from this artifact, so it is
   # needed in every pipeline.
 
 # The fips test suites load the FIPS provider at runtime (provider.zig), so
 # the catalog Linux zig-test / zig-fuzz jobs link the fips-deps OpenSSL via
-# -Dopenssl_path (their test_options above, plus the x86 tag) and need its
-# openssl.cnf to activate fips+base. They are in the test stage, so they
-# download the fips-deps artifact automatically.
-.fips-provider-env: &fips-provider-env
-  OPENSSL_CONF: "$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf"
-zig-test-unit-debug-0.16.0: { variables: *fips-provider-env }
-zig-test-unit-releasesafe-0.16.0: { variables: *fips-provider-env }
-zig-test-unit-releasefast-0.16.0: { variables: *fips-provider-env }
-zig-test-unit-releasesmall-0.16.0: { variables: *fips-provider-env }
-zig-test-integration-0.16.0: { variables: *fips-provider-env }
-zig-test-stress-0.16.0: { variables: *fips-provider-env }
-zig-fuzz-0.16.0: { variables: *fips-provider-env }
+# -Dopenssl_path (their test_options above, plus the x86 tag). That build's
+# compiled-in OPENSSLDIR is $CI_PROJECT_DIR/.openssl-fips/ssl, so its default
+# openssl.cnf (fips + base) is picked up without OPENSSL_CONF. Don't set
+# OPENSSL_CONF job-wide: the system openssl run by apt's ca-certificates
+# hook then fails to load that config. The jobs are in the test stage, so
+# they download the fips-deps artifact automatically.
 
 test-fips:
   extends: .zig-host-base

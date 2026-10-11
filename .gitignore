@@ -4,6 +4,8 @@ zig-cache/
 zig-out/
 .remember/
 .cache/
+.ci-artifacts/
+.ci-tools/
 
 # Editor directories
 .vscode/

@@ -1,0 +1,13 @@
+{
+  "name": "fips-ci",
+  "version-string": "0",
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "dependencies": [
+    {
+      "name": "openssl",
+      "default-features": false,
+      "features": ["fips", "tools"],
+      "version>=": "3.6.5"
+    }
+  ]
+}

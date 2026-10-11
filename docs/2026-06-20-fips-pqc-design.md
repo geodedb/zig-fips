@@ -52,8 +52,12 @@ Scaffolded from `zig-template` (`bootstrap.sh fips`), module name `fips`. Respon
 
 ### 3.3 PQC wrappers (`fips.kem`, `fips.sig`) — all from OpenSSL
 
-- **KEM:** ML-KEM-512/768/1024; **hybrids** X25519MLKEM768 (default), X448MLKEM1024, SecP256r1MLKEM768, SecP384r1MLKEM1024
+- **KEM:** ML-KEM-512/768/1024; **hybrids** X25519MLKEM768 (default), SecP256r1MLKEM768, SecP384r1MLKEM1024
 - **Signature:** ML-DSA-44/65/87; SLH-DSA (all 12 SHA2/SHAKE × 128/192/256 × s/f)
+
+2026-10-11 correction (SONNY-4782): `X448MLKEM1024` remains a named
+compatibility enum, but is not approved by the supported OpenSSL 3.6.5
+provider. The FIPS API rejects it without falling back to another provider.
 
 ### 3.4 Algorithm-policy table
 

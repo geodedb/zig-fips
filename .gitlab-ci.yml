@@ -308,6 +308,19 @@ scale-bench:
 # build needs build-essential + perl, provided by .zig-host-base + the
 # script's own prereq step.
 # ---------------------------------------------------------------
+release-signature-tests:
+  stage: test
+  image: debian:bookworm-slim
+  tags: ["company", "linux"]
+  before_script:
+  - apt-get update && apt-get install -y --no-install-recommends python3 gnupg
+  script:
+  - python3 scripts/test_release_signature.py -v
+  rules:
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  - if: '$CI_COMMIT_TAG'
+
 fips-deps:
   extends: .zig-host-base
   stage: build

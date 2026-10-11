@@ -26,6 +26,10 @@ test "seam selects std_shim when fips=false and exposes the API" {
     // Re-exports resolve as the pinned named types.
     comptime {
         _ = backend.Kem.EncapResult;
+        _ = backend.Kem.PublicKey;
+        std.debug.assert(@hasDecl(backend.Kem, "exportPublic"));
+        std.debug.assert(@hasDecl(backend.Kem, "importPublic"));
+        std.debug.assert(@hasDecl(backend.Kem, "encapsulatePublic"));
         _ = backend.Sig.KeyPair;
         _ = backend.policy.Hash;
         // The whole-Sig re-export reaches the raw-EC import constructors

@@ -155,6 +155,13 @@ pub fn assertActive() void {
     ensureFips() catch @panic("FIPS provider not loaded/self-tested; run `make deps`");
 }
 
+/// Reject externally supplied keys owned by another provider or lib context.
+/// Selecting fips=yes for an operation alone does not prove key provenance.
+pub fn ownsKey(pkey: *const c.EVP_PKEY) bool {
+    assertActive();
+    return c.EVP_PKEY_get0_provider(pkey) == g_fips;
+}
+
 test "fips provider loads + self-tests" {
     try ensureFips();
     // Idempotent: second call is a no-op.

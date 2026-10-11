@@ -3,19 +3,11 @@ param([Parameter(Mandatory = $true)][string[]] $Steps)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/ci-native.ps1"
 & "$PSScriptRoot/test_ci_native.ps1"
+. "$PSScriptRoot/ci-vcpkg.ps1"
+& "$PSScriptRoot/test_ci_vcpkg.ps1"
 $vcpkgCommit = 'e456309491fd875487bf02b8a0dca76c1b1b00cc'
 $vcpkgDir = Join-Path $PWD '.ci-tools/vcpkg'
-if (-not (Test-Path "$vcpkgDir/.git")) {
-    New-Item -ItemType Directory -Path $vcpkgDir -Force | Out-Null
-    Invoke-CiNative git @('init', $vcpkgDir)
-    Invoke-CiNative git @('-C', $vcpkgDir, 'remote', 'add', 'origin', 'https://github.com/microsoft/vcpkg.git')
-    Invoke-CiNative git @('-C', $vcpkgDir, 'fetch', '--depth=1', 'origin', $vcpkgCommit)
-    Invoke-CiNative git @('-C', $vcpkgDir, 'checkout', '--detach', $vcpkgCommit)
-}
-$actualCommit = @(Invoke-CiNative git @('-C', $vcpkgDir, 'rev-parse', 'HEAD'))
-if ($actualCommit.Count -ne 1 -or $actualCommit[0] -ne $vcpkgCommit) {
-    throw 'Cached vcpkg checkout does not match the pinned commit'
-}
+Initialize-CiVcpkgCheckout -CheckoutPath $vcpkgDir -Commit $vcpkgCommit
 Invoke-CiNative "$vcpkgDir/bootstrap-vcpkg.bat" @('-disableMetrics')
 $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $PWD '.ci-tools/vcpkg-cache'
 New-Item -ItemType Directory -Path $env:VCPKG_DEFAULT_BINARY_CACHE -Force | Out-Null

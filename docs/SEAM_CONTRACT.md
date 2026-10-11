@@ -51,9 +51,38 @@ implement them identically (see the spec's "Shared contract"):
 | `Sig` ECDSA P-521 | full | `error.Unsupported` (std has no P-521) |
 | `Sig` RSA | full (RSA-PSS / PKCS1) | `error.Unsupported` (std has no RSA) |
 | `Sig` ML-DSA / SLH-DSA | full | `error.Unsupported` (fips-only) |
-| `Kem` ML-KEM + hybrids | full | `error.Unsupported` (fips-only) |
+| `Kem` ML-KEM + approved hybrids, incl. public wire-key import/export | full | `error.Unsupported` (fips-only) |
 | `secureZero(buf: []u8)` | `OPENSSL_cleanse` | `std.crypto.secureZero(u8, buf)` |
 | `timingSafeEql(a, b: []const u8) bool` | `CRYPTO_memcmp` | constant-time `diff \|= x ^ y` loop |
+
+### KEM peer public keys
+
+`Kem.exportPublic(alg, *KeyPair, out) Error!usize` exports the provider's
+encoded public key, without SPKI/PEM framing or private material.
+`Kem.importPublic(alg, wire) Error!PublicKey` imports those bytes as an owned,
+public-only key. Call `PublicKey.deinit()` when finished. Use
+`Kem.encapsulatePublic(alg, *PublicKey, ct_out, ss_out) Error!EncapResult`
+on the responding peer and the existing `Kem.decapsulate` with the original
+`KeyPair` on the initiating peer. Both peers must select the same algorithm.
+
+All operations reject unapproved algorithms, keys of a different algorithm,
+and keys owned by another provider/lib context with `error.Unsupported`.
+The provider checks the imported key's length and encoding. Malformed input
+or insufficient output capacity returns `error.OpensslFailure`; callers
+must fail closed. Policy, key-binding, and output-size rejection leave
+outputs unchanged. Once a cryptographic operation starts, failure wipes its
+shared-secret output region, which must never be consumed after an error.
+Importing X25519 bytes does not prove that they admit a valid shared secret;
+low-order inputs are rejected by encapsulation.
+
+Do not reorder hybrid components. In particular, X25519MLKEM768 uses the
+ML-KEM component first in its public key (1184 + 32 bytes), ciphertext
+(1088 + 32 bytes), and shared secret (32 + 32 bytes). The P-256/P-384 hybrid
+groups use their own provider-defined ordering. See
+[the TLS hybrid group specification](https://datatracker.ietf.org/doc/html/draft-ietf-tls-ecdhe-mlkem-05)
+and [OpenSSL's ML-KEM key encoding](https://docs.openssl.org/3.6/man7/EVP_PKEY-ML-KEM/).
+The canonical non-FIPS shim exposes the same types and functions and returns
+`error.Unsupported`, without an implicit fallback or OpenSSL dependency.
 
 ### Cross-backend caveats
 

@@ -32,6 +32,28 @@ exit $Code
     try { Invoke-CiNative -FilePath (Join-Path $tempDir 'missing-executable') | Out-Null }
     catch { $missingFailed = $true }
     if (-not $missingFailed) { throw 'Missing executable was accepted' }
+    $savedPath = $env:PATH
+    try {
+        $first = Join-Path $tempDir 'first'
+        $second = Join-Path $tempDir 'second'
+        New-Item -ItemType Directory -Path $first, $second | Out-Null
+        $windows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+        $commandName = if ($windows) { 'ci-native-fixture.cmd' } else { 'ci-native-fixture.sh' }
+        foreach ($entry in @(@($first, 'first'), @($second, 'second'))) {
+            $commandPath = Join-Path $entry[0] $commandName
+            $body = if ($windows) { "@echo off`r`necho $($entry[1])`r`n" } else { "#!/bin/sh`necho $($entry[1])`n" }
+            [System.IO.File]::WriteAllText($commandPath, $body)
+            if (-not $windows) { Invoke-CiNative chmod @('+x', $commandPath) | Out-Null }
+        }
+        $separator = [System.IO.Path]::PathSeparator
+        $env:PATH = "$first$separator$second$separator$savedPath"
+        $chosen = @(Invoke-CiNative $commandName)
+        if ($chosen.Count -ne 1 -or $chosen[0] -ne 'first') {
+            throw 'Multiple PATH matches did not select the first native executable'
+        }
+    }
+    finally { $env:PATH = $savedPath }
+    Write-Host 'PASS: native command selects the first of multiple PATH matches'
     Write-Host 'PASS: native stderr success, nonzero exit, literal arguments, missing executable, preference restoration'
 }
 finally {

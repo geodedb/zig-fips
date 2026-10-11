@@ -22,12 +22,18 @@ New-Item -ItemType Directory -Path $env:VCPKG_DEFAULT_BINARY_CACHE -Force | Out-
 $installRoot = Join-Path $PWD '.ci-tools/vcpkg-installed'
 Invoke-CiNative "$vcpkgDir/vcpkg.exe" @('install', '--triplet=x64-windows', '--host-triplet=x64-windows', "--x-manifest-root=$PWD/ci/windows", "--x-install-root=$installRoot", '--disable-metrics')
 $prefix = Join-Path $installRoot 'x64-windows'
-$openssl = Join-Path $prefix 'tools/openssl/openssl.exe'
+# Interop tests use OPENSSL_PREFIX/bin/openssl and OPENSSL_PREFIX/ssl.
+# Normalize vcpkg's tools layout to that same prefix contract.
+$env:OPENSSL_PREFIX = $prefix
+$openssl = Join-Path $prefix 'bin/openssl.exe'
+Copy-Item -LiteralPath (Join-Path $prefix 'tools/openssl/openssl.exe') -Destination $openssl -Force
 $env:Path = "$prefix\bin;$env:Path"
+$version = @(Invoke-CiNative $openssl @('version')) -join "`n"
+if ($version -notmatch '^OpenSSL 3\.6\.5\s') { throw "Unexpected OpenSSL version: $version" }
 $modules = @(Get-ChildItem -LiteralPath $prefix -Filter fips.dll -Recurse | Where-Object { $_.FullName -notmatch '\\debug\\' })
 if ($modules.Count -ne 1) { throw 'Expected exactly one release FIPS provider DLL' }
 $env:OPENSSL_MODULES = $modules[0].DirectoryName
-$configDir = Join-Path $PWD '.ci-artifacts/windows'
+$configDir = Join-Path $prefix 'ssl'
 New-Item -ItemType Directory -Path $configDir -Force | Out-Null
 $moduleConfig = Join-Path $configDir 'fipsmodule.cnf'
 Invoke-CiNative $openssl @('fipsinstall', '-module', $modules[0].FullName, '-out', $moduleConfig)

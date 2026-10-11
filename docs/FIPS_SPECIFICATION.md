@@ -42,7 +42,18 @@ confirmed via `openssl list` on 3.6.2.
 | Signature (ML-DSA) | `ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87` | `policy.SigAlg` |
 | Signature (SLH-DSA) | all 12: `SLH-DSA-SHA2-{128,192,256}{s,f}`, `SLH-DSA-SHAKE-{128,192,256}{s,f}` | `policy.SigAlg` |
 | KEM (ML-KEM) | `ML-KEM-512`, `ML-KEM-768`, `ML-KEM-1024` | `policy.KemAlg` |
-| KEM (hybrid) | `X25519MLKEM768`, `X448MLKEM1024`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` (note the mixed-case `SecP*` tokens) | `policy.KemAlg` |
+| KEM (hybrid) | `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` (note the mixed-case `SecP*` tokens) | `policy.KemAlg` |
+
+**2026-10-11 correction (SONNY-4782).** OpenSSL 3.6.5 registers
+`X448MLKEM1024` with `fips=no` for key management and encapsulation.
+Its enum and fetch-name mapping remain for source compatibility, but
+`policy.isApproved` / `policy.isKemApproved` reject it and every FIPS
+KEM operation returns `error.Unsupported`. Tests explicitly verify both
+the provider rejection and unchanged output buffers; no provider fallback
+is permitted. The other six KEM variants retain real round-trip coverage.
+The authenticated release source `providers/fips/fipsprov.c` is the
+reference for these version-specific properties; provider availability
+alone is not algorithm approval.
 
 **Forbidden under `-Dfips=true`** (rejected at comptime / compiled out;
 `policy.isApproved` returns false): ChaCha20-Poly1305, Argon2id, BLAKE3,

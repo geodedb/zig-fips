@@ -24,6 +24,7 @@ pub const Kem = struct {
 
     /// Generate a fresh KEM key pair for `alg`.
     pub fn generate(alg: policy.KemAlg) Error!KeyPair {
+        if (!policy.isKemApproved(alg)) return error.Unsupported;
         provider.assertActive();
         const pctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), policy.kemName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_PKEY_CTX_free(pctx);
@@ -36,7 +37,7 @@ pub const Kem = struct {
     /// Encapsulate to `kp`'s public key. Writes the ciphertext into
     /// `ct_out` and the shared secret into `ss_out`; returns the lengths.
     pub fn encapsulate(alg: policy.KemAlg, kp: *KeyPair, ct_out: []u8, ss_out: []u8) Error!EncapResult {
-        _ = alg;
+        if (!policy.isKemApproved(alg)) return error.Unsupported;
         provider.assertActive();
         const ctx = c.EVP_PKEY_CTX_new_from_pkey(provider.libCtx(), kp.pkey, "fips=yes") orelse return error.OpensslFailure;
         defer c.EVP_PKEY_CTX_free(ctx);
@@ -53,7 +54,7 @@ pub const Kem = struct {
     /// Decapsulate `ct` with `kp`'s private key. Writes the shared
     /// secret into `ss_out`; returns its length.
     pub fn decapsulate(alg: policy.KemAlg, kp: *KeyPair, ct: []const u8, ss_out: []u8) Error!usize {
-        _ = alg;
+        if (!policy.isKemApproved(alg)) return error.Unsupported;
         provider.assertActive();
         const ctx = c.EVP_PKEY_CTX_new_from_pkey(provider.libCtx(), kp.pkey, "fips=yes") orelse return error.OpensslFailure;
         defer c.EVP_PKEY_CTX_free(ctx);
@@ -110,18 +111,17 @@ test "EncapResult is the pinned named type" {
     }
 }
 
-test "all KEM variants encap/decap agree" {
+test "all approved KEM variants encap/decap agree" {
     const util = @import("util.zig");
     const algs = [_]policy.KemAlg{
-        .ml_kem_512,           .ml_kem_1024,           .x448_ml_kem_1024,
+        .ml_kem_512,           .ml_kem_1024,
         .secp256r1_ml_kem_768, .secp384r1_ml_kem_1024,
     };
     for (algs) |alg| {
         var kp = try Kem.generate(alg);
         defer kp.deinit();
         var ct: [4096]u8 = undefined;
-        // 128 bytes accommodates all hybrid combined secrets
-        // (largest: X448=56 + ML-KEM-1024=32 = 88 bytes).
+        // 128 bytes accommodates every approved hybrid combined secret.
         var ss_a: [128]u8 = undefined;
         var ss_b: [128]u8 = undefined;
         defer util.secureZero(&ss_a);
@@ -130,4 +130,24 @@ test "all KEM variants encap/decap agree" {
         const d = try Kem.decapsulate(alg, &kp, ct[0..e.ct_len], &ss_b);
         try std.testing.expect(util.timingSafeEql(ss_a[0..e.ss_len], ss_b[0..d]));
     }
+}
+
+test "SONNY-4782 provider rejects the X448 hybrid with fips=yes" {
+    provider.assertActive();
+    const ctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), policy.kemName(.x448_ml_kem_1024), "fips=yes");
+    defer if (ctx) |p| c.EVP_PKEY_CTX_free(p);
+    try std.testing.expect(ctx == null);
+    try std.testing.expectError(error.Unsupported, Kem.generate(.x448_ml_kem_1024));
+}
+
+test "SONNY-4782 unapproved KEM operations reject even an approved key without writing outputs" {
+    var kp = try Kem.generate(.ml_kem_768);
+    defer kp.deinit();
+    var ct = [_]u8{0xa5} ** 2048;
+    var ss = [_]u8{0x5a} ** 128;
+    try std.testing.expectError(error.Unsupported, Kem.encapsulate(.x448_ml_kem_1024, &kp, &ct, &ss));
+    try std.testing.expect(std.mem.allEqual(u8, &ct, 0xa5));
+    try std.testing.expect(std.mem.allEqual(u8, &ss, 0x5a));
+    try std.testing.expectError(error.Unsupported, Kem.decapsulate(.x448_ml_kem_1024, &kp, &ct, &ss));
+    try std.testing.expect(std.mem.allEqual(u8, &ss, 0x5a));
 }

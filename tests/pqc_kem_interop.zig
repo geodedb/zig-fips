@@ -47,6 +47,10 @@ fn runCli(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, arg
 /// Import a PEM key (public or private) into an EVP_PKEY via the FIPS
 /// provider's OSSL_DECODER, selecting ML-KEM-768.
 fn importPem(pem: []const u8, selection: c_int) !*c.EVP_PKEY {
+    // libCtx() creates the context but does not initialize its provider.
+    // Initialize before decoding so the key belongs to the active FIPS
+    // provider rather than an implicitly loaded default provider.
+    fips.assertActive();
     var pkey: ?*c.EVP_PKEY = null;
     const dctx = c.OSSL_DECODER_CTX_new_for_pkey(
         &pkey,

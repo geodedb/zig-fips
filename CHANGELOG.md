@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-11
+
+### Added
+
+- KEM public-key wire format (SONNY-4793): `Kem.exportPublic` writes a key
+  pair's provider-native public key, `Kem.importPublic` builds a public-only
+  `Kem.PublicKey` from a peer's share, and `Kem.encapsulatePublic`
+  encapsulates to it. TLS needs these to send a ClientHello key share and to
+  accept a peer's share through the FIPS seam. The `std_shim` backend has the
+  same API and returns `error.Unsupported`.
+
+### Fixed
+
+- KEM operations now check the approval policy, that the key's algorithm
+  matches the one requested, and that the active FIPS provider context owns
+  the key. Before this, a request for one variant could run against a key of
+  another (SONNY-4793). When a cryptographic operation fails, its
+  shared-secret output buffer is wiped.
+- `X448MLKEM1024` is no longer advertised as approved: OpenSSL 3.6.5
+  registers it with `fips=no`. Generate, encapsulate and decapsulate reject it
+  before touching any buffer. The enum value and name mapping stay for source
+  compatibility (SONNY-4782).
+- `scripts/install-openssl-fips.sh` rejected authentic OpenSSL releases that
+  were signed by a certified subkey. It now reads GnuPG's machine-readable
+  status output (`scripts/verify-release-signature.sh`) and requires exactly
+  one good signature whose primary fingerprint is pinned (SONNY-4781).
+
+### Changed
+
+- CI builds the pinned OpenSSL 3.6.5 FIPS provider once and hands it to
+  every Linux build and test job as a verified archive. Native Windows and
+  macOS jobs now provision OpenSSL themselves (SONNY-2770).
+- Pre-commit hooks that run external tools now unset Git's
+  repository-steering variables (SONNY-4778). The gitleaks exception for the
+  public OpenSSL signing-key fingerprints applies only to the installer path
+  (SONNY-4789).
+
 ## [0.1.2] - 2026-09-25
 
 ### Fixed

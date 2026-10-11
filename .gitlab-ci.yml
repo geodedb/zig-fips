@@ -36,6 +36,12 @@ default:
   - company
   - linux
 
+# Prove that the public-key exception remains narrowly scoped with the exact
+# scanner image used for the required history scan below.
+security-gitleaks:
+  before_script:
+  - sh scripts/test_gitleaks_allowlist.sh
+
 include:
   # Security scanning
 - component: gitlab.com/devnw/ci-catalog/security-sast@v1.25.1

@@ -5,7 +5,7 @@ function Invoke-CiNative {
         [Parameter(Mandatory = $true)][string] $FilePath,
         [string[]] $ArgumentList = @()
     )
-    $executable = (Get-Command -Name $FilePath -CommandType Application -ErrorAction Stop).Source
+    $executable = (Get-Command -Name $FilePath -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'

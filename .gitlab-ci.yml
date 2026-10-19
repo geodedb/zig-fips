@@ -33,6 +33,9 @@ default:
   tags:
   - company
   - linux
+  # Policy-injected scanner jobs inherit these tags; their GitLab SAST images
+  # are AMD64-only, so keep them off the ARM fleet (SRE-183).
+  - amd64
 
 # Prove that the public-key exception remains narrowly scoped with the exact
 # scanner image used for the required history scan below.

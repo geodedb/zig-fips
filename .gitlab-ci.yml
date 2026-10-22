@@ -41,8 +41,7 @@ default:
   tags:
     - company
     - linux
-  # Policy-injected scanner jobs inherit these tags; their GitLab SAST images
-  # are AMD64-only, so keep them off the ARM fleet (SRE-183).
+  # Keep these jobs on Linux AMD64 runners.
     - amd64
 
 # Prove that the public-key exception remains narrowly scoped with the exact

@@ -420,15 +420,34 @@ release-signature-tests:
 fips-deps:
   extends: .zig-host-base
   stage: dependencies
+  # make deps still checks the version and verifies the active provider.
+  # Include this CI file in the key so image/configuration changes invalidate it.
+  dependencies: []
+  cache:
+    key:
+      prefix: openssl-fips-linux-x86
+      files:
+        - .gitlab-ci.yml
+        - scripts/install-openssl-fips.sh
+    paths:
+      - .ci-artifacts/openssl/
+    policy: pull-push
   # gnupg is installed above so the OpenSSL release GPG signature is checked;
   # REQUIRE_GPG=1 makes that authenticity check mandatory (fail closed if the
   # signature/key cannot be verified, e.g. a transient .asc fetch failure).
   variables:
     REQUIRE_GPG: "1"
+  # Provider provisioning uses C/Perl, so this job does not install Zig.
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends build-essential perl curl wget sudo gnupg dirmngr python3 ca-certificates
   script:
-    - apt-get install -y --no-install-recommends perl wget gnupg dirmngr sudo
     - curl -fsSL https://www.openssl-library.org/source/pubkeys.asc -o openssl-pubkeys.asc
     - gpg --batch --import openssl-pubkeys.asc
+    - |
+      if [ -f .ci-artifacts/openssl/openssl.json ]; then
+        python3 scripts/ci_openssl_artifact.py restore || echo "Cached OpenSSL snapshot is unusable; rebuilding"
+      fi
     - make deps
     - python3 scripts/ci_openssl_artifact.py pack
   artifacts:

@@ -5,7 +5,7 @@
 # Local pre-push gate. Ensures the OpenSSL FIPS provider is installed
 # locally, then compiles the FIPS-linked library and runs the dual-mode
 # (std_shim + OpenSSL FIPS) test suite — so every local push exercises the
-# FIPS backend exactly like CI's `fips-deps` + `test-fips` jobs, with no
+# FIPS backend like CI's shim and required catalog test jobs, with no
 # silent fall-back to the std.crypto shim and no `--no-verify` needed.
 #
 # Override the OpenSSL prefix with OPENSSL_PREFIX (default /usr/local/ssl).

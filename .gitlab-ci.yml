@@ -20,6 +20,7 @@
 # the auto-cancel actually kicks in; opt out per-job when needed.
 workflow:
   auto_cancel:
+    on_job_failure: all
     on_new_commit: interruptible
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_OPEN_MERGE_REQUESTS && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
@@ -217,23 +218,27 @@ stages:
     allow_failure: true
 
 zig-build-macos-0.16.0:
+  tags: [dedicated, macos, arm]
   rules: *cross-os-rules
   script:
     - bash scripts/ci-macos.sh build check
 
 zig-test-macos-unit-0.16.0:
+  tags: [dedicated, macos, arm]
   rules: *cross-os-rules
   needs: ["zig-build-macos-0.16.0"]
   script:
     - bash scripts/ci-macos.sh test
 
 zig-test-macos-integration-0.16.0:
+  tags: [dedicated, macos, arm]
   rules: *cross-os-rules
   needs: ["zig-build-macos-0.16.0"]
   script:
     - bash scripts/ci-macos.sh test-integration
 
 zig-test-macos-stress-0.16.0:
+  tags: [dedicated, macos, arm]
   rules: *cross-os-rules
   needs: ["zig-build-macos-0.16.0"]
   script:

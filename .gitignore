@@ -23,6 +23,7 @@ Thumbs.db
 *.out
 test_*
 !tests/
+!scripts/test_ci_macos.py
 
 # Build artifacts
 *.exe

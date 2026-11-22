@@ -30,6 +30,10 @@ test "seam selects std_shim when fips=false and exposes the API" {
         std.debug.assert(@hasDecl(backend.Kem, "exportPublic"));
         std.debug.assert(@hasDecl(backend.Kem, "importPublic"));
         std.debug.assert(@hasDecl(backend.Kem, "encapsulatePublic"));
+        _ = backend.Ecdh.KeyPair;
+        _ = backend.Ecdh.PublicKey;
+        for (.{ "generate", "exportPublic", "importPublic", "derive" }) |name|
+            std.debug.assert(@hasDecl(backend.Ecdh, name));
         _ = backend.Sig.KeyPair;
         _ = backend.policy.Hash;
         // The whole-Sig re-export reaches the raw-EC import constructors

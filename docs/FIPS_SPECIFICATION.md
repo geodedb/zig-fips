@@ -43,6 +43,7 @@ confirmed via `openssl list` on 3.6.2.
 | Signature (SLH-DSA) | all 12: `SLH-DSA-SHA2-{128,192,256}{s,f}`, `SLH-DSA-SHAKE-{128,192,256}{s,f}` | `policy.SigAlg` |
 | KEM (ML-KEM) | `ML-KEM-512`, `ML-KEM-768`, `ML-KEM-1024` | `policy.KemAlg` |
 | KEM (hybrid) | `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` (note the mixed-case `SecP*` tokens) | `policy.KemAlg` |
+| Key agreement (KAS-ECC) | `ECDH` over P-256 / P-384 (SEC1 uncompressed, SP 800-56A full public-key validation) | `policy.EcdhCurve` |
 
 **2026-10-11 correction (SONNY-4782).** OpenSSL 3.6.5 registers
 `X448MLKEM1024` with `fips=no` for key management and encapsulation.

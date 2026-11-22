@@ -535,3 +535,96 @@ test "SONNY-4793 shim public KEM API stays unsupported without touching outputs"
     try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
     try std.testing.expect(std.mem.allEqual(u8, &ss, 0x5a));
 }
+
+// ENG-7617: shim Ecdh mirrors the fips backend's SEC1/validation contract.
+fn hexArr(comptime s: []const u8) [s.len / 2]u8 {
+    var out: [s.len / 2]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, s) catch unreachable;
+    return out;
+}
+
+test "ENG-7617 shim Ecdh KAT: NIST CAVP KAS_ECC_CDH P-256/P-384 count 0" {
+    const cases = .{
+        .{
+            shim.policy.EcdhCurve.p256,
+            "7d7dc5f71eb29ddaf80d6214632eeae03d9058af1fb6d22ed80badb62bc1a534",
+            "04ead218590119e8876b29146ff89ca61770c4edbbf97d38ce385ed281d8a6b23028af61281fd35e2fa7002523acc85a429cb06ee6648325389f59edfce1405141",
+            "04700c48f77f56584c5cc632ca65640db91b6bacce3a4df6b42ce7cc838833d287db71e509e3fd9b060ddb20ba5c51dcc5948d46fbf640dfe0441782cab85fa4ac",
+            "46fc62106420ff012e54a434fbdd2d25ccc5852060561e68040dd7778997bd7b",
+        },
+        .{
+            shim.policy.EcdhCurve.p384,
+            "3cc3122a68f0d95027ad38c067916ba0eb8c38894d22e1b15618b6818a661774ad463b205da88cf699ab4d43c9cf98a1",
+            "049803807f2f6d2fd966cdd0290bd410c0190352fbec7ff6247de1302df86f25d34fe4a97bef60cff548355c015dbb3e5fba26ca69ec2f5b5d9dad20cc9da711383a9dbe34ea3fa5a2af75b46502629ad54dd8b7d73a8abb06a3a3be47d650cc99",
+            "04a7c76b970c3b5fe8b05d2838ae04ab47697b9eaf52e764592efda27fe7513272734466b400091adbf2d68c58e0c50066ac68f19f2e1cb879aed43a9969b91a0839c4c38a49749b661efedf243451915ed0905a32b060992b468c64766fc8437a",
+            "5f9d29dc5e31a163060356213669c8ce132e22f57c9a04f40ba7fcead493b457e5621e766c40a2e3d4d6a04b25e533f1",
+        },
+    };
+    inline for (cases) |case| {
+        const curve = case[0];
+        const d = hexArr(case[1]);
+        const q_own = hexArr(case[2]);
+        const q_peer = hexArr(case[3]);
+        const z_want = hexArr(case[4]);
+        var kp: shim.Ecdh.KeyPair = .{ .curve = curve, .sk = @splat(0), .pk = @splat(0) };
+        defer kp.deinit();
+        @memcpy(kp.sk[0..d.len], &d);
+        @memcpy(kp.pk[0..q_own.len], &q_own);
+        var peer = try shim.Ecdh.importPublic(curve, &q_peer);
+        defer peer.deinit();
+        var z: [shim.policy.ecdh_max_secret_len]u8 = undefined;
+        const n = try shim.Ecdh.derive(curve, &kp, &peer, &z);
+        try std.testing.expectEqualSlices(u8, &z_want, z[0..n]);
+    }
+}
+
+test "ENG-7617 shim Ecdh two-party agreement and malformed-point rejection" {
+    inline for (.{ shim.policy.EcdhCurve.p256, shim.policy.EcdhCurve.p384 }) |curve| {
+        const n = comptime shim.policy.ecdhPublicLen(curve);
+        const fl = (n - 1) / 2;
+        var a = try shim.Ecdh.generate(curve);
+        defer a.deinit();
+        var b = try shim.Ecdh.generate(curve);
+        defer b.deinit();
+        var wa: [n]u8 = undefined;
+        var wb: [n]u8 = undefined;
+        try std.testing.expectEqual(n, try shim.Ecdh.exportPublic(curve, &a, &wa));
+        _ = try shim.Ecdh.exportPublic(curve, &b, &wb);
+        var pa = try shim.Ecdh.importPublic(curve, &wa);
+        var pb = try shim.Ecdh.importPublic(curve, &wb);
+        var za: [48]u8 = undefined;
+        var zb: [48]u8 = undefined;
+        const la = try shim.Ecdh.derive(curve, &a, &pb, &za);
+        const lb = try shim.Ecdh.derive(curve, &b, &pa, &zb);
+        try std.testing.expectEqual(shim.policy.ecdhSecretLen(curve), la);
+        try std.testing.expectEqualSlices(u8, za[0..la], zb[0..lb]);
+
+        var w: [n + 1]u8 = undefined;
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, wa[0 .. n - 1]));
+        @memcpy(w[0..n], &wa);
+        w[n] = 0;
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, w[0 .. n + 1]));
+        var comp: [fl + 1]u8 = undefined;
+        comp[0] = 0x02 | (wa[n - 1] & 1);
+        @memcpy(comp[1..], wa[1 .. 1 + fl]);
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, &comp));
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, &[_]u8{0x00}));
+        @memset(w[0..n], 0);
+        w[0] = 0x04;
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, w[0..n]));
+        @memcpy(w[0..n], &wa);
+        w[n - 1] ^= 0x01;
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, w[0..n]));
+        @memcpy(w[0..n], &wa);
+        @memset(w[1 .. 1 + fl], 0xff);
+        try std.testing.expectError(error.InvalidPublicKey, shim.Ecdh.importPublic(curve, w[0..n]));
+
+        // Curve binding and output bounds leave buffers untouched.
+        var out = [_]u8{0xa5} ** 97;
+        const other: shim.policy.EcdhCurve = if (curve == .p256) .p384 else .p256;
+        try std.testing.expectError(error.Unsupported, shim.Ecdh.exportPublic(other, &a, &out));
+        try std.testing.expectError(error.OpensslFailure, shim.Ecdh.exportPublic(curve, &a, out[0 .. n - 1]));
+        try std.testing.expectError(error.OpensslFailure, shim.Ecdh.derive(curve, &a, &pb, out[0 .. la - 1]));
+        try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
+    }
+}

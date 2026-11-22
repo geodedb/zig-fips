@@ -133,6 +133,8 @@ const approved_names = [_][]const u8{
     "ML-KEM-512",         "ML-KEM-768",         "ML-KEM-1024",        "X25519MLKEM768",     "SecP256r1MLKEM768",  "SecP384r1MLKEM1024",
     "SLH-DSA-SHA2-128s",  "SLH-DSA-SHA2-128f",  "SLH-DSA-SHA2-192s",  "SLH-DSA-SHA2-192f",  "SLH-DSA-SHA2-256s",  "SLH-DSA-SHA2-256f",
     "SLH-DSA-SHAKE-128s", "SLH-DSA-SHAKE-128f", "SLH-DSA-SHAKE-192s", "SLH-DSA-SHAKE-192f", "SLH-DSA-SHAKE-256s", "SLH-DSA-SHAKE-256f",
+    // SP 800-56A Rev. 3 KAS-ECC over P-256/P-384 (`Ecdh`, ENG-7617).
+    "ECDH",
 };
 
 pub fn isApproved(comptime name: []const u8) bool {
@@ -146,6 +148,131 @@ pub fn isKemApproved(alg: KemAlg) bool {
         inline else => |value| isApproved(kemName(value)),
     };
 }
+
+/// FIPS 203 encapsulation-key length in bytes for `alg` (the raw `ek`
+/// encoding, not SPKI). Hybrid groups use the provider's named-group wire
+/// layout: X25519MLKEM768 = ML-KEM ek || X25519 public key; the SecP*
+/// hybrids = SEC1 uncompressed point || ML-KEM ek.
+pub fn kemEncapsulationKeyLen(alg: KemAlg) usize {
+    return switch (alg) {
+        .ml_kem_512 => 800,
+        .ml_kem_768 => 1184,
+        .ml_kem_1024 => 1568,
+        .x25519_ml_kem_768 => 1184 + 32,
+        .x448_ml_kem_1024 => 1568 + 56,
+        .secp256r1_ml_kem_768 => 65 + 1184,
+        .secp384r1_ml_kem_1024 => 97 + 1568,
+    };
+}
+
+/// FIPS 203 ciphertext length in bytes (same hybrid layout as the key).
+pub fn kemCiphertextLen(alg: KemAlg) usize {
+    return switch (alg) {
+        .ml_kem_512 => 768,
+        .ml_kem_768 => 1088,
+        .ml_kem_1024 => 1568,
+        .x25519_ml_kem_768 => 1088 + 32,
+        .x448_ml_kem_1024 => 1568 + 56,
+        .secp256r1_ml_kem_768 => 1088 + 65,
+        .secp384r1_ml_kem_1024 => 1568 + 97,
+    };
+}
+
+/// Shared-secret length in bytes. Pure ML-KEM is 32; hybrids concatenate
+/// the ML-KEM secret with the raw ECDH/X25519 secret.
+pub fn kemSharedSecretLen(alg: KemAlg) usize {
+    return switch (alg) {
+        .ml_kem_512, .ml_kem_768, .ml_kem_1024 => 32,
+        .x25519_ml_kem_768 => 32 + 32,
+        .x448_ml_kem_1024 => 32 + 56,
+        .secp256r1_ml_kem_768 => 32 + 32,
+        .secp384r1_ml_kem_1024 => 32 + 48,
+    };
+}
+
+/// Largest values of the three functions above over every `KemAlg`.
+pub const kem_max_encapsulation_key_len = 1665;
+pub const kem_max_ciphertext_len = 1665;
+pub const kem_max_shared_secret_len = 88;
+
+/// FIPS 203 §7.2 encapsulation-key input checks, applied before a peer key
+/// is handed to any backend:
+///   * type check: `ek` has exactly `kemEncapsulationKeyLen(alg)` bytes;
+///   * modulus check: ByteEncode12(ByteDecode12(ek_PKE[0:384k])) == ek_PKE,
+///     i.e. every packed 12-bit coefficient of t-hat is < q = 3329.
+/// For hybrids the check covers the ML-KEM component at its wire offset;
+/// the classical component is validated by the backend (on-curve /
+/// X25519 decode). Pure, constant-time over the key bytes (public data).
+pub fn kemEncapsulationKeyCheck(alg: KemAlg, ek: []const u8) bool {
+    if (ek.len != kemEncapsulationKeyLen(alg)) return false;
+    const off: usize, const k: usize = switch (alg) {
+        .ml_kem_512 => .{ 0, 2 },
+        .ml_kem_768 => .{ 0, 3 },
+        .ml_kem_1024 => .{ 0, 4 },
+        .x25519_ml_kem_768 => .{ 0, 3 },
+        .x448_ml_kem_1024 => .{ 0, 4 },
+        .secp256r1_ml_kem_768 => .{ 65, 3 },
+        .secp384r1_ml_kem_1024 => .{ 97, 4 },
+    };
+    return mlKemModulusCheck(ek[off .. off + 384 * k]);
+}
+
+fn mlKemModulusCheck(t_hat: []const u8) bool {
+    std.debug.assert(t_hat.len % 3 == 0);
+    var bad: u32 = 0;
+    var i: usize = 0;
+    while (i < t_hat.len) : (i += 3) {
+        const b0: u32 = t_hat[i];
+        const b1: u32 = t_hat[i + 1];
+        const b2: u32 = t_hat[i + 2];
+        const c0 = b0 | ((b1 & 0x0f) << 8);
+        const c1 = (b1 >> 4) | (b2 << 4);
+        // (x - 3329) >> 31 is 1 iff x < 3329; accumulate the "not less" bits.
+        bad |= ((c0 -% 3329) >> 31) ^ 1;
+        bad |= ((c1 -% 3329) >> 31) ^ 1;
+    }
+    return bad == 0;
+}
+
+/// SP 800-56A Rev. 3 elliptic-curve Diffie-Hellman over the NIST prime
+/// curves (KAS-ECC, C(2e,0s) / C(1e,1s) primitive). Both curves have
+/// cofactor 1, so ECC CDH and plain ECDH coincide.
+pub const EcdhCurve = enum { p256, p384 };
+
+/// OpenSSL EC group name for `curve`.
+pub fn ecdhGroupName(curve: EcdhCurve) [:0]const u8 {
+    return switch (curve) {
+        .p256 => "P-256",
+        .p384 => "P-384",
+    };
+}
+
+/// Runtime ECDH selection: approved when "ECDH" is in the approved table.
+pub fn isEcdhApproved(curve: EcdhCurve) bool {
+    return switch (curve) {
+        .p256, .p384 => isApproved("ECDH"),
+    };
+}
+
+/// SEC1 §2.3.3 uncompressed point length: 0x04 || X || Y.
+pub fn ecdhPublicLen(curve: EcdhCurve) usize {
+    return switch (curve) {
+        .p256 => 65,
+        .p384 => 97,
+    };
+}
+
+/// Shared secret Z length: the x-coordinate, field-size octets (SP 800-56A
+/// §5.7.1.2).
+pub fn ecdhSecretLen(curve: EcdhCurve) usize {
+    return switch (curve) {
+        .p256 => 32,
+        .p384 => 48,
+    };
+}
+
+pub const ecdh_max_public_len = 97;
+pub const ecdh_max_secret_len = 48;
 
 test "approved table accepts AES-256-GCM, rejects ChaCha20-Poly1305" {
     try std.testing.expect(isApproved("AES-256-GCM"));
@@ -170,4 +297,54 @@ test "SONNY-4782 X448 hybrid is excluded from the approved fetch policy" {
         const alg: KemAlg = @enumFromInt(field.value);
         try std.testing.expectEqual(isApproved(kemName(alg)), isKemApproved(alg));
     }
+}
+
+test "ENG-7617 KEM and ECDH size tables" {
+    inline for (@typeInfo(KemAlg).@"enum".fields) |field| {
+        const alg: KemAlg = @enumFromInt(field.value);
+        try std.testing.expect(kemEncapsulationKeyLen(alg) <= kem_max_encapsulation_key_len);
+        try std.testing.expect(kemCiphertextLen(alg) <= kem_max_ciphertext_len);
+        try std.testing.expect(kemSharedSecretLen(alg) <= kem_max_shared_secret_len);
+    }
+    try std.testing.expectEqual(@as(usize, 1184), kemEncapsulationKeyLen(.ml_kem_768));
+    try std.testing.expectEqual(@as(usize, 1568), kemCiphertextLen(.ml_kem_1024));
+    try std.testing.expect(isApproved("ECDH"));
+    try std.testing.expect(isEcdhApproved(.p256) and isEcdhApproved(.p384));
+    try std.testing.expectEqual(@as(usize, 97), ecdhPublicLen(.p384));
+    try std.testing.expectEqual(@as(usize, 32), ecdhSecretLen(.p256));
+}
+
+test "ENG-7617 FIPS 203 encapsulation-key type and modulus checks" {
+    // All-zero coefficients are canonical.
+    var ek = [_]u8{0} ** 1568;
+    try std.testing.expect(kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1184]));
+    try std.testing.expect(kemEncapsulationKeyCheck(.ml_kem_1024, ek[0..1568]));
+    // Type check: wrong length either way.
+    try std.testing.expect(!kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1183]));
+    try std.testing.expect(!kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1185]));
+    try std.testing.expect(!kemEncapsulationKeyCheck(.ml_kem_768, ek[0..0]));
+    // 3328 = q - 1 is the largest canonical coefficient (low then high nibble).
+    ek[0] = 0x00;
+    ek[1] = 0x0d;
+    try std.testing.expect(kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1184]));
+    // 3329 = q in the first coefficient: rejected.
+    ek[0] = 0x01;
+    try std.testing.expect(!kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1184]));
+    // 3329 in the SECOND packed coefficient of the last triple of t-hat.
+    @memset(&ek, 0);
+    ek[384 * 3 - 2] = 0x10; // low nibble of c1 = 1 -> c1 = 0xd01 = 3329
+    ek[384 * 3 - 1] = 0xd0;
+    try std.testing.expect(!kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1184]));
+    // The 32-byte rho seed after t-hat is unconstrained.
+    @memset(&ek, 0);
+    @memset(ek[384 * 3 .. 1184], 0xff);
+    try std.testing.expect(kemEncapsulationKeyCheck(.ml_kem_768, ek[0..1184]));
+    // Hybrid offsets: the SEC1 point prefix is not part of the modulus check,
+    // but an out-of-range coefficient right after it is.
+    var hy = [_]u8{0} ** 1665;
+    @memset(hy[0..97], 0xff);
+    try std.testing.expect(kemEncapsulationKeyCheck(.secp384r1_ml_kem_1024, &hy));
+    hy[97] = 0xff;
+    hy[98] = 0x0f;
+    try std.testing.expect(!kemEncapsulationKeyCheck(.secp384r1_ml_kem_1024, &hy));
 }

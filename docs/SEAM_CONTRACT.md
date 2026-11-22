@@ -38,7 +38,7 @@ The seam re-exports these names; both the `fips` backend and `std_shim`
 implement them identically (see the spec's "Shared contract"):
 `fips_enabled`, `assertActive()`, `ensureFips()`, `policy`, `Hash`, `Mac`,
 `Kdf` (incl. `hkdfExpand`), `Aead`, `Sig` (incl. `KeyPair.fromPublicBytes` /
-`fromPrivateBytes`), `Kem` (incl. the pinned `Kem.EncapResult`),
+`fromPrivateBytes`), `Kem` (incl. the pinned `Kem.EncapResult`), `Ecdh`,
 `Csprng`, `secureZero`, `timingSafeEql`.
 
 ### Backend support matrix
@@ -52,6 +52,7 @@ implement them identically (see the spec's "Shared contract"):
 | `Sig` RSA | full (RSA-PSS / PKCS1) | `error.Unsupported` (std has no RSA) |
 | `Sig` ML-DSA / SLH-DSA | full | `error.Unsupported` (fips-only) |
 | `Kem` ML-KEM + approved hybrids, incl. public wire-key import/export | full | `error.Unsupported` (fips-only) |
+| `Ecdh` P-256 / P-384 (SEC1 uncompressed import/export, derive) | full (KAS-ECC, approved indicator enforced) | full (`std.crypto.ecc`, same validation) |
 | `secureZero(buf: []u8)` | `OPENSSL_cleanse` | `std.crypto.secureZero(u8, buf)` |
 | `timingSafeEql(a, b: []const u8) bool` | `CRYPTO_memcmp` | constant-time `diff \|= x ^ y` loop |
 
@@ -64,6 +65,15 @@ public-only key. Call `PublicKey.deinit()` when finished. Use
 `Kem.encapsulatePublic(alg, *PublicKey, ct_out, ss_out) Error!EncapResult`
 on the responding peer and the existing `Kem.decapsulate` with the original
 `KeyPair` on the initiating peer. Both peers must select the same algorithm.
+
+Before the provider sees a peer key, `importPublic` applies the FIPS 203
+§7.2 encapsulation-key checks itself (`policy.kemEncapsulationKeyCheck`):
+the type check (exact `policy.kemEncapsulationKeyLen(alg)` bytes) and the
+modulus check (every packed t-hat coefficient < 3329, on the ML-KEM component
+of a hybrid at its wire offset). `decapsulate` applies the §7.3 ciphertext
+type check (`policy.kemCiphertextLen(alg)`). `policy.kemSharedSecretLen` and
+the `policy.kem_max_*` constants size buffers. ACVP keyGen/encapDecap vectors
+and unreduced-key negatives live in `src/testdata_pubkey_kat.txt`.
 
 All operations reject unapproved algorithms, keys of a different algorithm,
 and keys owned by another provider/lib context with `error.Unsupported`.
@@ -83,6 +93,34 @@ groups use their own provider-defined ordering. See
 and [OpenSSL's ML-KEM key encoding](https://docs.openssl.org/3.6/man7/EVP_PKEY-ML-KEM/).
 The canonical non-FIPS shim exposes the same types and functions and returns
 `error.Unsupported`, without an implicit fallback or OpenSSL dependency.
+
+### ECDH (P-256 / P-384)
+
+`Ecdh` is SP 800-56A Rev. 3 elliptic-curve Diffie-Hellman (the KAS-ECC
+primitive) for callers that build their own hybrid combiner (for example
+`p256 + ml_kem_768` through an SP 800-56C / SP 800-227 KDF) instead of the
+provider's named `SecP*MLKEM*` groups.
+
+- `Ecdh.generate(curve) Error!KeyPair`; `KeyPair.deinit()`.
+- `Ecdh.exportPublic(curve, *KeyPair, out) Error!usize` writes the SEC1
+  uncompressed point `0x04 || X || Y` (`policy.ecdhPublicLen`: 65 / 97 bytes).
+- `Ecdh.importPublic(curve, sec1) Error!PublicKey` accepts only that exact
+  length and the `0x04` prefix (compressed, hybrid and infinity encodings are
+  `error.InvalidPublicKey`), then runs SP 800-56A §5.6.2.3.3 full public-key
+  validation (`EVP_PKEY_public_check`: coordinates < p, on the curve, not the
+  identity, order check). Off-curve points are `error.InvalidPublicKey`.
+- `Ecdh.derive(curve, *KeyPair, *PublicKey, out) Error!usize` writes Z, the
+  x-coordinate (`policy.ecdhSecretLen`: 32 / 48 bytes). Z is raw key
+  material: pass it through an approved KDF. In the fips backend the derive
+  re-validates the peer (`EVP_PKEY_derive_set_peer_ex(..., 1)`) and fails
+  closed with `error.Unsupported` unless the exchange's
+  `OSSL_EXCHANGE_PARAM_FIPS_APPROVED_INDICATOR` is 1.
+
+Keys on the wrong curve, from another provider/lib context, or a curve the
+policy does not approve are `error.Unsupported`; undersized outputs are
+`error.OpensslFailure`. Every rejection leaves the output buffer unchanged.
+NIST CAVP `KAS_ECC_CDH_PrimitiveTest` vectors (P-256 / P-384) are in
+`src/testdata_pubkey_kat.txt`.
 
 ### Cross-backend caveats
 

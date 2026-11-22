@@ -32,6 +32,7 @@ pub const Mac = backend.Mac;
 pub const Kdf = backend.Kdf;
 pub const Sig = backend.Sig;
 pub const Kem = backend.Kem;
+pub const Ecdh = backend.Ecdh;
 pub const Csprng = backend.Csprng;
 pub const policy = backend.policy;
 pub const assertActive = backend.assertActive;

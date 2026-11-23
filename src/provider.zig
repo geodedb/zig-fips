@@ -5,6 +5,7 @@
 //! default property query to `fips=yes`, run its self-tests, and offer
 //! a hard-fail assertion for startup.
 const std = @import("std");
+const builtin = @import("builtin");
 const ffi = @import("ffi.zig");
 const c = ffi.c;
 const policy = @import("policy.zig");
@@ -40,9 +41,16 @@ var g_kdf_hkdf: ?*c.EVP_KDF = null;
 /// Cached EVP_KDF* for PBKDF2 (fips=yes, process-lifetime).
 var g_kdf_pbkdf2: ?*c.EVP_KDF = null;
 
-/// Spin-acquire g_mu, parking via Thread.yield while contended.
+/// Spin-acquire g_mu, parking via Thread.yield while contended. A
+/// freestanding target (e.g. Freya userspace linking OpenSSL through its own
+/// libc) has no `std.Thread.yield`; it spins with a CPU pause hint instead.
 fn muLock() void {
-    while (!g_mu.tryLock()) std.Thread.yield() catch {};
+    while (!g_mu.tryLock()) {
+        if (comptime builtin.os.tag == .freestanding or builtin.os.tag == .other)
+            std.atomic.spinLoopHint()
+        else
+            std.Thread.yield() catch {};
+    }
 }
 
 /// Returns the process-global lib context with `fips=yes` as the
@@ -177,7 +185,6 @@ test "fips=yes selects only fips-approved digests" {
 }
 
 test "concurrent first-use init is race-free and converges to one context" {
-    const builtin = @import("builtin");
     if (builtin.single_threaded) return error.SkipZigTest;
     const N = 16;
     var threads: [N]std.Thread = undefined;

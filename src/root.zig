@@ -3,7 +3,7 @@
 
 //! fips — FIPS-140-3 / PQC backend over the OpenSSL 3.x FIPS provider.
 //! Public surface is filled in by later tasks (policy, Hash, Mac, Kdf,
-//! Aead, Sig, Kem, Csprng, assertActive).
+//! Aead, Sig, Kem, Ecdh, Csprng, assertActive).
 
 pub const version = "0.1.3";
 
@@ -27,6 +27,7 @@ pub const Aead = @import("aead.zig").Aead;
 pub const Csprng = @import("csprng.zig").Csprng;
 pub const Sig = @import("sig.zig").Sig;
 pub const Kem = @import("kem.zig").Kem;
+pub const Ecdh = @import("ecdh.zig").Ecdh;
 pub const secureZero = @import("util.zig").secureZero;
 pub const timingSafeEql = @import("util.zig").timingSafeEql;
 
@@ -49,5 +50,7 @@ test {
     _ = @import("csprng.zig");
     _ = @import("sig.zig");
     _ = @import("kem.zig");
+    _ = @import("ecdh.zig");
+    _ = @import("kat.zig");
     _ = @import("util.zig");
 }

@@ -45,16 +45,20 @@ pub const Kem = struct {
         var len: usize = 0;
         if (c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, null, 0, &len) != 1)
             return error.OpensslFailure;
-        if (len == 0 or len > out.len) return error.OpensslFailure;
+        if (len != policy.kemEncapsulationKeyLen(alg) or len > out.len) return error.OpensslFailure;
         if (c.EVP_PKEY_get_octet_string_param(kp.pkey, c.OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, out.ptr, len, &len) != 1)
             return error.OpensslFailure;
         return len;
     }
 
-    /// Import only public bytes using the approved provider. The provider
-    /// validates the exact length and encoding for alg. Never imports secrets.
+    /// Import only public bytes using the approved provider. Never imports
+    /// secrets. The FIPS 203 §7.2 encapsulation-key checks run in the seam
+    /// first (`policy.kemEncapsulationKeyCheck`: exact length = type check,
+    /// every t-hat coefficient < 3329 = modulus check), then the provider
+    /// re-validates the full encoding (incl. the classical hybrid half).
     pub fn importPublic(alg: policy.KemAlg, wire: []const u8) Error!PublicKey {
         if (!policy.isKemApproved(alg)) return error.Unsupported;
+        if (!policy.kemEncapsulationKeyCheck(alg, wire)) return error.OpensslFailure;
         provider.assertActive();
         const ctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), policy.kemName(alg), "fips=yes") orelse return error.Unsupported;
         defer c.EVP_PKEY_CTX_free(ctx);
@@ -119,6 +123,8 @@ pub const Kem = struct {
     /// secret into `ss_out`; returns its length.
     pub fn decapsulate(alg: policy.KemAlg, kp: *KeyPair, ct: []const u8, ss_out: []u8) Error!usize {
         try checkKey(alg, kp.pkey);
+        // FIPS 203 §7.3 ciphertext type check, before the provider sees it.
+        if (ct.len != policy.kemCiphertextLen(alg)) return error.OpensslFailure;
         const ctx = c.EVP_PKEY_CTX_new_from_pkey(provider.libCtx(), kp.pkey, "fips=yes") orelse return error.OpensslFailure;
         defer c.EVP_PKEY_CTX_free(ctx);
         if (c.EVP_PKEY_decapsulate_init(ctx, null) != 1) return error.OpensslFailure;
@@ -407,4 +413,160 @@ test "SONNY-4793 low-order X25519 peer fails closed and wipes partial secret" {
     @memset(ct[1088..], 0);
     try std.testing.expectError(error.OpensslFailure, Kem.decapsulate(.x25519_ml_kem_768, &kp, ct[0..valid.ct_len], &ss));
     try std.testing.expect(std.mem.allEqual(u8, &ss, 0));
+}
+
+// ---------------------------------------------------------------------------
+// ENG-7617: NIST ACVP known-answer tests for the public-key exchange path.
+// Vectors: src/testdata_pubkey_kat.txt (provenance in its header).
+// ---------------------------------------------------------------------------
+
+const kat = @import("kat.zig");
+
+fn katAlg(param: []const u8) policy.KemAlg {
+    if (std.mem.eql(u8, param, "ML-KEM-768")) return .ml_kem_768;
+    if (std.mem.eql(u8, param, "ML-KEM-1024")) return .ml_kem_1024;
+    @panic("unexpected KAT parameter set");
+}
+
+/// Test-only: FIPS 203 ML-KEM.KeyGen_internal(d, z) inside the provider
+/// from the ACVP 64-byte seed d || z.
+fn katKeyFromSeed(alg: policy.KemAlg, seed: []const u8) !Kem.KeyPair {
+    provider.assertActive();
+    const pctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), policy.kemName(alg), "fips=yes") orelse return error.Unsupported;
+    defer c.EVP_PKEY_CTX_free(pctx);
+    try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_keygen_init(pctx));
+    var params = [_]c.OSSL_PARAM{
+        c.OSSL_PARAM_construct_octet_string(c.OSSL_PKEY_PARAM_ML_KEM_SEED, @constCast(seed.ptr), seed.len),
+        c.OSSL_PARAM_construct_end(),
+    };
+    try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_CTX_set_params(pctx, &params));
+    var pkey: ?*c.EVP_PKEY = null;
+    try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_generate(pctx, &pkey));
+    return .{ .pkey = pkey.? };
+}
+
+test "ENG-7617 ML-KEM KAT: ACVP keyGen -> exportPublic is the raw FIPS 203 ek" {
+    var it = kat.records("mlkem_keygen");
+    var n: usize = 0;
+    var seed_buf: [64]u8 = undefined;
+    var ek_buf: [1568]u8 = undefined;
+    while (it.next()) |r| : (n += 1) {
+        const alg = katAlg(r.param);
+        const seed = try kat.hex(&seed_buf, r.field(1));
+        const ek_want = try kat.hex(&ek_buf, r.field(2));
+        var kp = try katKeyFromSeed(alg, seed);
+        defer kp.deinit();
+        var out: [policy.kem_max_encapsulation_key_len]u8 = undefined;
+        const len = try Kem.exportPublic(alg, &kp, &out);
+        try std.testing.expectEqualSlices(u8, ek_want, out[0..len]);
+    }
+    try std.testing.expectEqual(@as(usize, 8), n);
+}
+
+test "ENG-7617 ML-KEM KAT: ACVP encapsulation to an imported ek" {
+    // importPublic(ek) must yield exactly the ACVP key: encapsulating to it
+    // with the vector's message m (provider test hook OSSL_KEM_PARAM_IKME,
+    // ACVP-only, flagged unapproved by the provider) reproduces c and K.
+    var it = kat.records("mlkem_encap");
+    var n: usize = 0;
+    var m_buf: [32]u8 = undefined;
+    var ek_buf: [1568]u8 = undefined;
+    var ct_buf: [1568]u8 = undefined;
+    var k_buf: [32]u8 = undefined;
+    while (it.next()) |r| : (n += 1) {
+        const alg = katAlg(r.param);
+        const m = try kat.hex(&m_buf, r.field(0));
+        const ek = try kat.hex(&ek_buf, r.field(1));
+        const ct_want = try kat.hex(&ct_buf, r.field(2));
+        const k_want = try kat.hex(&k_buf, r.field(3));
+        var peer = try Kem.importPublic(alg, ek);
+        defer peer.deinit();
+        const ctx = c.EVP_PKEY_CTX_new_from_pkey(provider.libCtx(), peer.pkey, "fips=yes") orelse return error.OpensslFailure;
+        defer c.EVP_PKEY_CTX_free(ctx);
+        var params = [_]c.OSSL_PARAM{
+            c.OSSL_PARAM_construct_octet_string(c.OSSL_KEM_PARAM_IKME, m.ptr, m.len),
+            c.OSSL_PARAM_construct_end(),
+        };
+        try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_encapsulate_init(ctx, &params));
+        var ct: [1568]u8 = undefined;
+        var ss: [32]u8 = undefined;
+        var ct_len: usize = ct.len;
+        var ss_len: usize = ss.len;
+        try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_encapsulate(ctx, &ct, &ct_len, &ss, &ss_len));
+        try std.testing.expectEqualSlices(u8, ct_want, ct[0..ct_len]);
+        try std.testing.expectEqualSlices(u8, k_want, ss[0..ss_len]);
+        // And the production path (fresh randomness) still interoperates
+        // with the same imported key: sizes are the FIPS 203 constants.
+        var ct2: [1568]u8 = undefined;
+        var ss2: [32]u8 = undefined;
+        const e = try Kem.encapsulatePublic(alg, &peer, &ct2, &ss2);
+        try std.testing.expectEqual(policy.kemCiphertextLen(alg), e.ct_len);
+        try std.testing.expectEqual(@as(usize, 32), e.ss_len);
+    }
+    try std.testing.expectEqual(@as(usize, 8), n);
+}
+
+test "ENG-7617 ML-KEM negative KAT: unreduced encapsulation keys are rejected (modulus check)" {
+    var it = kat.records("mlkem_bad_ek");
+    var n: usize = 0;
+    var ek_buf: [1568]u8 = undefined;
+    while (it.next()) |r| : (n += 1) {
+        const alg = katAlg(r.param);
+        const ek = try kat.hex(&ek_buf, r.field(0));
+        try std.testing.expectEqual(policy.kemEncapsulationKeyLen(alg), ek.len);
+        // The seam's own FIPS 203 check rejects it...
+        try std.testing.expect(!policy.kemEncapsulationKeyCheck(alg, ek));
+        try std.testing.expectError(error.OpensslFailure, Kem.importPublic(alg, ek));
+        // ...and so does the provider on its own (defence in depth: bypass
+        // the seam check and call EVP_PKEY_fromdata directly).
+        const ctx = c.EVP_PKEY_CTX_new_from_name(provider.libCtx(), policy.kemName(alg), "fips=yes") orelse return error.Unsupported;
+        defer c.EVP_PKEY_CTX_free(ctx);
+        try std.testing.expectEqual(@as(c_int, 1), c.EVP_PKEY_fromdata_init(ctx));
+        var params = [_]c.OSSL_PARAM{
+            c.OSSL_PARAM_construct_octet_string(c.OSSL_PKEY_PARAM_PUB_KEY, ek.ptr, ek.len),
+            c.OSSL_PARAM_construct_end(),
+        };
+        var pkey: ?*c.EVP_PKEY = null;
+        defer c.EVP_PKEY_free(pkey);
+        try std.testing.expect(c.EVP_PKEY_fromdata(ctx, &pkey, c.EVP_PKEY_PUBLIC_KEY, &params) != 1);
+        c.ERR_clear_error();
+    }
+    try std.testing.expectEqual(@as(usize, 12), n);
+}
+
+test "ENG-7617 ML-KEM decapsulation agrees with an independent implementation (Zig std)" {
+    // KeyGen from the same ACVP seed in the provider and in std.crypto's
+    // independent ML-KEM; std encapsulates deterministically to the ek the
+    // provider EXPORTED, the provider decapsulates. Also checks the FIPS 203
+    // §7.3 ciphertext length check.
+    const ml_kem = std.crypto.kem.ml_kem;
+    var it = kat.records("mlkem_keygen");
+    var seed_buf: [64]u8 = undefined;
+    var n: usize = 0;
+    while (it.next()) |r| : (n += 1) {
+        const alg = katAlg(r.param);
+        const seed = try kat.hex(&seed_buf, r.field(1));
+        var kp = try katKeyFromSeed(alg, seed);
+        defer kp.deinit();
+        var ek: [policy.kem_max_encapsulation_key_len]u8 = undefined;
+        const ek_len = try Kem.exportPublic(alg, &kp, &ek);
+        var ss: [32]u8 = undefined;
+        defer @import("util.zig").secureZero(&ss);
+        const m = [_]u8{@intCast(n)} ** 32;
+        switch (alg) {
+            inline .ml_kem_768, .ml_kem_1024 => |a| {
+                const Std = if (a == .ml_kem_768) ml_kem.MLKem768 else ml_kem.MLKem1024;
+                const std_kp = try Std.KeyPair.generateDeterministic(seed[0..64].*);
+                try std.testing.expectEqualSlices(u8, &std_kp.public_key.toBytes(), ek[0..ek_len]);
+                const pk = try Std.PublicKey.fromBytes(ek[0..Std.PublicKey.encoded_length]);
+                const enc = pk.encapsDeterministic(&m);
+                const got = try Kem.decapsulate(alg, &kp, &enc.ciphertext, &ss);
+                try std.testing.expectEqualSlices(u8, &enc.shared_secret, ss[0..got]);
+                // Wrong-length ciphertexts never reach the provider.
+                try std.testing.expectError(error.OpensslFailure, Kem.decapsulate(alg, &kp, enc.ciphertext[0 .. enc.ciphertext.len - 1], &ss));
+            },
+            else => unreachable,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 8), n);
 }

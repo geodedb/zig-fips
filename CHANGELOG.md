@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Ecdh` (ENG-7617): SP 800-56A Rev. 3 ECDH over P-256 / P-384 on both
+  backends. SEC1 uncompressed export/import only; import runs full public-key
+  validation (`EVP_PKEY_public_check`) and rejects compressed, hybrid,
+  infinity and off-curve encodings with `error.InvalidPublicKey`. The fips
+  backend's `derive` re-validates the peer and requires the provider's
+  approved-mode indicator. `ECDH` joins the approved table;
+  `policy.EcdhCurve`, `ecdhPublicLen`, `ecdhSecretLen`.
+- `policy.kemEncapsulationKeyLen` / `kemCiphertextLen` / `kemSharedSecretLen`
+  and `kem_max_*` constants, plus `policy.kemEncapsulationKeyCheck` (FIPS 203
+  §7.2 type + modulus check).
+- Known-answer tests: NIST ACVP ML-KEM-768/1024 keyGen (seed -> exported ek)
+  and encapDecap (imported ek + m -> c, K), unreduced-ek negatives, NIST CAVP
+  KAS-ECC-CDH P-256/P-384, and decapsulation cross-checked against std's
+  independent ML-KEM (`src/testdata_pubkey_kat.txt`).
+
+### Changed
+
+- `Kem.importPublic` applies the FIPS 203 §7.2 checks in the seam before the
+  provider; `Kem.exportPublic` requires the exact FIPS 203 length;
+  `Kem.decapsulate` applies the §7.3 ciphertext length check. All three
+  still report `error.OpensslFailure` as before.
+
 ## [0.1.3] - 2026-10-11
 
 ### Added

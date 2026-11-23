@@ -8,7 +8,7 @@
 //!
 //! std.crypto-backed backend mirroring the fips backend's public surface
 //! EXACTLY (Hash/Mac/Kdf incl. hkdfExpand, Aead, Sig, Kem incl. the
-//! pinned Kem.EncapResult, Csprng, assertActive). RSA and all PQC
+//! pinned Kem.EncapResult, Ecdh, Csprng, assertActive). RSA and all PQC
 //! (ML-DSA/SLH-DSA, ML-KEM + hybrids) are fips-only and return
 //! error.Unsupported here.
 const std = @import("std");
@@ -610,6 +610,105 @@ pub const Kem = struct {
         _ = ct;
         _ = ss_out;
         return error.Unsupported;
+    }
+};
+
+/// P-256/P-384 ECDH over std.crypto.ecc (constant-time `mul`). Same
+/// surface, wire format (SEC1 uncompressed only) and validation contract
+/// as the fips backend's `Ecdh`: exact length, 0x04 prefix, coordinates
+/// canonical (< p), on the curve, not the identity (cofactor 1, so this is
+/// SP 800-56A full public-key validation). Not a FIPS claim.
+pub const Ecdh = struct {
+    pub const Error = error{ Unsupported, InvalidPublicKey, OpensslFailure };
+
+    pub const KeyPair = struct {
+        curve: policy.EcdhCurve,
+        sk: [policy.ecdh_max_secret_len]u8,
+        pk: [policy.ecdh_max_public_len]u8,
+        pub fn deinit(self: *KeyPair) void {
+            std.crypto.secureZero(u8, &self.sk);
+        }
+    };
+
+    pub const PublicKey = struct {
+        curve: policy.EcdhCurve,
+        pk: [policy.ecdh_max_public_len]u8,
+        pub fn deinit(self: *PublicKey) void {
+            _ = self;
+        }
+    };
+
+    fn Curve(comptime curve: policy.EcdhCurve) type {
+        return switch (curve) {
+            .p256 => std.crypto.ecc.P256,
+            .p384 => std.crypto.ecc.P384,
+        };
+    }
+
+    pub fn generate(curve: policy.EcdhCurve) Error!KeyPair {
+        if (!policy.isEcdhApproved(curve)) return error.Unsupported;
+        switch (curve) {
+            inline else => |cv| {
+                const C = Curve(cv);
+                const n = comptime policy.ecdhSecretLen(cv);
+                var kp: KeyPair = .{ .curve = cv, .sk = @splat(0), .pk = @splat(0) };
+                errdefer kp.deinit();
+                // Rejection sampling of d in [1, n-1] (SP 800-56A §5.6.1.2.2).
+                var tries: usize = 0;
+                while (tries < 64) : (tries += 1) {
+                    var d: [n]u8 = undefined;
+                    defer std.crypto.secureZero(u8, &d);
+                    try randomBytes(&d);
+                    const s = C.scalar.Scalar.fromBytes(d, .big) catch continue;
+                    if (s.isZero()) continue;
+                    const q = C.basePoint.mul(d, .big) catch continue;
+                    @memcpy(kp.sk[0..n], &d);
+                    const enc = q.toUncompressedSec1();
+                    @memcpy(kp.pk[0..enc.len], &enc);
+                    return kp;
+                }
+                return error.OpensslFailure;
+            },
+        }
+    }
+
+    pub fn exportPublic(curve: policy.EcdhCurve, kp: *KeyPair, out: []u8) Error!usize {
+        if (!policy.isEcdhApproved(curve) or kp.curve != curve) return error.Unsupported;
+        const n = policy.ecdhPublicLen(curve);
+        if (out.len < n) return error.OpensslFailure;
+        @memcpy(out[0..n], kp.pk[0..n]);
+        return n;
+    }
+
+    pub fn importPublic(curve: policy.EcdhCurve, sec1: []const u8) Error!PublicKey {
+        if (!policy.isEcdhApproved(curve)) return error.Unsupported;
+        if (sec1.len != policy.ecdhPublicLen(curve) or sec1[0] != 0x04) return error.InvalidPublicKey;
+        switch (curve) {
+            inline else => |cv| {
+                const q = Curve(cv).fromSec1(sec1) catch return error.InvalidPublicKey;
+                q.rejectIdentity() catch return error.InvalidPublicKey;
+            },
+        }
+        var pk: PublicKey = .{ .curve = curve, .pk = @splat(0) };
+        @memcpy(pk.pk[0..sec1.len], sec1);
+        return pk;
+    }
+
+    pub fn derive(curve: policy.EcdhCurve, kp: *KeyPair, peer: *PublicKey, out: []u8) Error!usize {
+        if (!policy.isEcdhApproved(curve) or kp.curve != curve or peer.curve != curve) return error.Unsupported;
+        const n = policy.ecdhSecretLen(curve);
+        if (out.len < n) return error.OpensslFailure;
+        switch (curve) {
+            inline else => |cv| {
+                const C = Curve(cv);
+                const len = comptime policy.ecdhSecretLen(cv);
+                const q = C.fromSec1(peer.pk[0..comptime policy.ecdhPublicLen(cv)]) catch return error.InvalidPublicKey;
+                const r = q.mul(kp.sk[0..len].*, .big) catch return error.InvalidPublicKey;
+                const z = r.affineCoordinates().x.toBytes(.big);
+                @memcpy(out[0..len], &z);
+                return len;
+            },
+        }
     }
 };
 
